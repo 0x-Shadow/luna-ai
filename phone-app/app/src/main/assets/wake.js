@@ -29,20 +29,20 @@
   const DEFAULTS = {
     // level gate
     smooth: 0.35,        // envelope EMA (0..1, higher = snappier)
-    minThresh: 0.014,    // absolute floor of the voiced gate
-    floorK: 2.4,         // threshold = max(minThresh, noiseFloor * floorK)
+    minThresh: 0.008,    // absolute floor of the voiced gate
+    floorK: 2.0,         // threshold = max(minThresh, noiseFloor * floorK)
     floorFast: 0.30,     // attack/release when signal drops below the floor
     floorSlow: 0.010,    // drift up while signal is near the floor (quiet only)
     floorNear: 1.8,      // only track noise up to floor * this; louder = speech
     floorMin: 0.0015,
-    floorMax: 0.05,
+    floorMax: 0.08,
 
     // shape matcher
     dipRatio: 0.72,      // a burst ends once the envelope falls below this fraction of its peak
-    valleyRatio: 0.95,   // valley must fall below this fraction of the smaller peak
+    valleyRatio: 0.98,   // valley must fall below this fraction of the smaller peak
                          // (natural "LOO-na" dips only to ~0.78 of the 2nd peak;
                          //  must stay well under 1.0 so a flat sustain can't pass)
-    peakRatio: 1.3,      // each peak must exceed threshold * peakRatio
+    peakRatio: 1.15,     // each peak must exceed threshold * peakRatio
     minBumpMs: 40,       // per-burst duration bounds
     maxBumpMs: 600,
     maxValleyMs: 500,    // dip+silence between bursts (word gaps are longer)

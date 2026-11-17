@@ -634,7 +634,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             val t = System.currentTimeMillis()
             if (t - lastLevelAt < 70) return
             lastLevelAt = t
-            val level = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+            val level = ((rmsdB + 50f) / 50f).coerceIn(0f, 1f)
             event("level", JSONObject().put("level", level).put("mode", listenMode))
         }
         override fun onBufferReceived(buffer: ByteArray?) {}
