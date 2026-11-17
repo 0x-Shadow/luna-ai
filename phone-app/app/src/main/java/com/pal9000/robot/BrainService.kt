@@ -14,21 +14,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
-/**
- * Foreground service keeping Loona's wake loop alive while the app is
- * backgrounded.
- *
- * Uses the ``microphone`` foreground-service type (correct for background
- * audio/wake-word use on Android 14+; ignored harmlessly on API < 34).
- * Requires RECORD_AUDIO, which Loona already holds.
- *
- * Separate from PanelService (dataSync, keeps the web panel alive).
- */
 class BrainService : Service() {
-
-    private const val TAG = "PAL9000"
-    private const val CHANNEL = "loona_brain"
-    private const val NOTIF_ID = 4712
 
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -63,23 +49,19 @@ class BrainService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL)
             .setContentTitle("Loona brain is running")
             .setContentText("Wake-word detection active in background")
-            .setSmallIcon(android.R.drawable.stat_sys_voice_search)
+            .setSmallIcon(android.R.drawable.stat_notify_more)
             .setOngoing(true)
             .setContentIntent(open)
         val notif = builder.build()
-        // microphone foreground-service type declared in manifest; API 34+ requests RECORD_AUDIO at runtime.
-        ContextCompat.startForegroundService(this, Intent(this, BrainService::class.java))
         startForeground(NOTIF_ID, notif)
         Log.d(TAG, "[BrainService] foreground started")
     }
 
-    /** Hold a partial wake lock while the wake loop is armed; release when idle. */
     fun acquireWakeLock() {
         if (wakeLock != null) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PAL9000:BrainService:wake")
-        wakeLock?.isAcquired = false
-        wakeLock?.acquire(10 * 60 * 1000) // max 10 min; the wake loop re-arms as needed
+        wakeLock?.acquire(10 * 60 * 1000)
         Log.d(TAG, "[BrainService] wake lock acquired")
     }
 
@@ -89,6 +71,10 @@ class BrainService : Service() {
     }
 
     companion object {
+        private const val TAG = "PAL9000"
+        private const val CHANNEL = "loona_brain"
+        private const val NOTIF_ID = 4712
+
         fun ensureRunning(ctx: Context) {
             try {
                 ContextCompat.startForegroundService(ctx, Intent(ctx, BrainService::class.java))

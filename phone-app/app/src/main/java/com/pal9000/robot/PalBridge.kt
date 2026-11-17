@@ -397,14 +397,18 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                     // and its ERROR_CLIENT callback is ignored in whisper mode.
                     try { speech?.stopListening() } catch (e: Exception) { /* ignore */ }
                     try { speech?.cancel() } catch (e: Exception) { /* ignore */ }
-                    startWhisperCapture { text ->
-                        if (text.isNullOrBlank()) {
-                            speechEvent("empty", null, "whisper heard nothing", 0)
-                        } else {
-                            Log.d(TAG, "[Whisper] final: $text")
-                            speechEvent("final", text, null, 0)
-                        }
-                    }, p.optLong("noSpeechMs", whisperNoSpeechMs), p.optLong("endMs", whisperEndMs)
+                    startWhisperCapture(
+                        { text: String? ->
+                            if (text.isNullOrBlank()) {
+                                speechEvent("empty", null, "whisper heard nothing", 0)
+                            } else {
+                                Log.d(TAG, "[Whisper] final: $text")
+                                speechEvent("final", text, null, 0)
+                            }
+                        },
+                        p.optLong("noSpeechMs", whisperNoSpeechMs),
+                        p.optLong("endMs", whisperEndMs)
+                    )
                     resolve(requestId, true, "{}")
                     return@post
                 }
@@ -722,12 +726,16 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         if (p.has("url")) whisperUrl = p.optString("url", whisperUrl).trim()
         mainHandler.post {
             if (capturing) { resolve(requestId, false, err("already recording")); return@post }
-            startWhisperCapture { text ->
-                resolve(requestId, !text.isNullOrBlank(), JSONObject()
-                    .put("text", text ?: "")
-                    .put("url", whisperUrl)
-                    .toString())
-            }, whisperNoSpeechMs, whisperEndMs
+            startWhisperCapture(
+                { text: String? ->
+                    resolve(requestId, !text.isNullOrBlank(), JSONObject()
+                        .put("text", text ?: "")
+                        .put("url", whisperUrl)
+                        .toString())
+                },
+                whisperNoSpeechMs,
+                whisperEndMs
+            )
         }
     }
 
@@ -1422,8 +1430,8 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             when (op) {
                 "play" -> mediaSessionBridge.play()
                 "pause" -> mediaSessionBridge.pause()
-                "next" -> mediaSessionBridge.next()
-                "prev", "previous" -> mediaSessionBridge.previous()
+                "next" -> mediaSessionBridge.nextTrack()
+                "prev", "previous" -> mediaSessionBridge.previousTrack()
                 "stop" -> mediaSessionBridge.stop()
                 else -> mediaSessionBridge.play()
             }
@@ -1472,35 +1480,35 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 }
                 "launchApp" -> {
                     val pkg = p.optString("query", "")
-                    val r = automationBridge.launchApp(pkg)
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject(r))
+                    val r: Map<String, Any?> = automationBridge.launchApp(pkg)
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject(r))
                 }
                 "snapshot" -> {
-                    val r = automationBridge.snapshot()
+                    val r: Map<String, Any?> = automationBridge.snapshot()
                     val arr = JSONArray()
-                    (r["elements"] as? List<*> ?: emptyList()).forEach { arr.put(JSONObject(it.toString())) }
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject().put("elements", arr).put("topPackage", r["topPackage"]))
+                    (r["elements"] as? List<Map<String, Any?>> ?: emptyList()).forEach { arr.put(JSONObject(it.toString())) }
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject().put("elements", arr).put("topPackage", r["topPackage"]))
                 }
                 "tapLabel" -> {
                     val label = p.optString("target", "")
-                    val r = automationBridge.tapLabel(label)
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject(r))
+                    val r: Map<String, Any?> = automationBridge.tapLabel(label)
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject(r))
                 }
                 "scroll" -> {
                     val label = p.optString("target", "")
                     val down = p.optString("text", "") == "down"
-                    val r = automationBridge.scroll(label, down)
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject(r))
+                    val r: Map<String, Any?> = automationBridge.scroll(label, down)
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject(r))
                 }
                 "typeText" -> {
                     val label = p.optString("target", "")
                     val text = p.optString("text", "")
-                    val r = automationBridge.typeText(label, text)
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject(r))
+                    val r: Map<String, Any?> = automationBridge.typeText(label, text)
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject(r))
                 }
                 "pressBack" -> {
-                    val r = automationBridge.pressBack()
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject(r))
+                    val r: Map<String, Any?> = automationBridge.pressBack()
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject(r))
                 }
                 "runTask" -> {
                     val taskId = p.optString("taskId", "task-" + System.currentTimeMillis())
@@ -1514,14 +1522,12 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                                 "text" to o.optString("text", null)
                             )
                         }
-                    } else emptyList()
-                    val r = automationBridge.runTask(taskId, steps)
-                    JSONObject().put("ok", r["ok"]).put("result", JSONObject().put("stoppedAt", r["stoppedAt"]).put("results", JSONArray(r["results"] as? List<*> ?: emptyList())))
-                }
-                "cancelTask" -> {
-                    val taskId = p.optString("taskId", "")
-                    val r = automationBridge.cancelTask(taskId)
-                    JSONObject().put("ok", r).put("result", JSONObject().put("cancelled", r))
+                    } else emptyList<Map<String, String?>>()
+                    val r: Map<String, Any?> = automationBridge.runTask(taskId, steps)
+                    val results = (r["results"] as? List<Map<String, Any?>> ?: emptyList())
+                    val resultsArr = JSONArray()
+                    results.forEach { resultsArr.put(JSONObject(it.toString())) }
+                    JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject().put("stoppedAt", r["stoppedAt"]).put("results", resultsArr))
                 }
                 else -> JSONObject().put("ok", false).put("error", "unknown automation method: $method")
             }

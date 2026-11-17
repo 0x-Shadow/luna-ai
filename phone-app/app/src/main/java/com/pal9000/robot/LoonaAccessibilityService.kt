@@ -9,30 +9,21 @@ import android.view.accessibility.AccessibilityEvent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlin.jvm.Volatile
 
-/**
- * Minimal accessibility service for Loona app control.
- *
- * Exposes the root node of the active window via [rootNode] so AutomationBridge
- * can traverse the UI tree and perform tap/scroll/text actions. The user must
- * enable this service in Android Settings › Accessibility before app control
- * works.
- */
 class LoonaAccessibilityService : AccessibilityService() {
 
     companion object {
         @Volatile var instance: LoonaAccessibilityService? = null
+        private const val TAG = "PAL9000"
     }
 
-    private const val TAG = "PAL9000"
-
-    /** Latest root node of the active window; null when the service is not connected. */
     @Volatile var rootNode: AccessibilityNodeInfo? = null
         private set
 
-    /** Window change events for observing foreground app switches. */
-    val windowEvents: SharedFlow<AccessibilityEvent> = _windowEvents.asSharedFlow()
     private val _windowEvents = MutableSharedFlow<AccessibilityEvent>(replay = 1, extraBufferCapacity = 8)
+
+    val windowEvents: SharedFlow<AccessibilityEvent> = _windowEvents.asSharedFlow()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -61,7 +52,6 @@ class LoonaAccessibilityService : AccessibilityService() {
             _windowEvents.tryEmit(event)
             val root = event.source ?: getRootInActiveWindow()
             root?.let { newRoot ->
-                // Release the previous root to avoid holding recycled nodes.
                 rootNode?.recycle()
                 rootNode = newRoot
             }

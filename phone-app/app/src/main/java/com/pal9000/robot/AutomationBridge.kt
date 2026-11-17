@@ -7,49 +7,31 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
-import android.view.accessibility.AccessibilityServiceInfo
 import android.util.Log
-import java.util.concurrent.ConcurrentHashMap
+import kotlin.jvm.Volatile
 
-private const val TAG = "PAL9000"
-
-/**
- * Loona app-control automation layer.
- *
- * Operates via Android Intents + AccessibilityService node tree. Never touches
- * passwords; never reports success without verifying a UI effect.
- *
- * All results return structured evidence, never blind success.
- */
 class AutomationBridge(private val ctx: Context) {
 
     private val pm = ctx.packageManager
     private val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
-    /** In-flight task cancellation flags: taskId -> cancelled */
-    private val cancelled = ConcurrentHashMap<String, Boolean>()
-
-    /** Last foreground app package after launch (used for evidence). */
     @Volatile private var lastForegroundPkg: String? = null
 
-    // ═══════════ discovery ═══════════
-
-    /** List installed launcher applications. */
     fun listApps(): List<Map<String, String>> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val acts = pm.queryIntentActivities(intent, 0)
         return acts.map { ai ->
-            val label = ai.loadLabel(pm)?.toString() ?: ai.activityInfo.packageName
-            mapOf("label" to label, "pkg" to ai.activityInfo.packageName)
-        }.sortedBy { it["label"]!!.lowercase() }
+            val pkgName = ai.activityInfo?.packageName ?: ""
+            val label = ai.loadLabel(pm)?.toString() ?: pkgName
+            mapOf("label" to label, "pkg" to pkgName)
+        }.sortedBy { it["label"]?.toString()?.lowercase() ?: "" }
     }
 
-    /** Resolve a user-spoken query to an installed app package. */
     private fun resolveApp(query: String): String? {
         val raw = query.lowercase().trim()
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val acts = pm.queryIntentActivities(intent, 0)
-        val labels = acts.map { it to (ai.loadLabel(pm)?.toString() ?: "").lowercase() }
+        val labels = acts.map { it to (it.loadLabel(pm)?.toString() ?: "").lowercase() }
         val queries = when {
             raw == "yt" || raw == "youtube" || raw == "you tube" -> listOf("youtube")
             raw.replace(" ", "") == "ytmusic" || raw == "youtube music" || raw == "yt music" ->
@@ -58,16 +40,13 @@ class AutomationBridge(private val ctx: Context) {
             else -> listOf(raw)
         }
         for (q in queries) {
-            return labels.firstOrNull { it.second == q }?.first?.activityInfo.packageName
-                ?: labels.firstOrNull { it.second.startsWith(q) }?.first?.activityInfo.packageName
-                ?: labels.firstOrNull { it.second.contains(q) }?.first?.activityInfo.packageName
+            return labels.firstOrNull { it.second == q }?.first?.activityInfo?.packageName
+                ?: labels.firstOrNull { it.second.startsWith(q) }?.first?.activityInfo?.packageName
+                ?: labels.firstOrNull { it.second.contains(q) }?.first?.activityInfo?.packageName
         }
         return null
     }
 
-    // ═══════════ launch ═══════════
-
-    /** Launch an app by label and verify it became foreground. Returns structured evidence. */
     fun launchApp(query: String): Map<String, Any?> {
         val pkg = resolveApp(query) ?: return mapOf("ok" to false, "error" to "no app matches '$query'")
         val launch = pm.getLaunchIntentForPackage(pkg) ?: return mapOf("ok" to false, "error" to "cannot launch")
@@ -77,7 +56,6 @@ class AutomationBridge(private val ctx: Context) {
         } catch (e: Exception) {
             return mapOf("ok" to false, "error" to "start failed: ${e.message}")
         }
-        // Verify foreground after a short wait.
         Thread.sleep(800)
         val foreground = foregroundPkg()
         lastForegroundPkg = foreground
@@ -90,7 +68,6 @@ class AutomationBridge(private val ctx: Context) {
         )
     }
 
-    /** Currently foreground app package (best effort). */
     private fun foregroundPkg(): String? {
         try {
             val procs = am.runningAppProcesses
@@ -102,9 +79,6 @@ class AutomationBridge(private val ctx: Context) {
         return null
     }
 
-    // ═══════════ accessibility tree ═══════════
-
-    /** Snapshot the current accessibility UI tree. Requires LoonaAccessibilityService enabled. */
     fun snapshot(): Map<String, Any?> {
         val svc = LoonaAccessibilityService.instance
         val root = svc?.rootNode ?: return mapOf(
@@ -121,7 +95,7 @@ class AutomationBridge(private val ctx: Context) {
     }
 
     private fun collect(n: AccessibilityNodeInfo, out: MutableList<Map<String, Any?>>, depth: Int = 0) {
-        if (depth > 100 || n == null) return
+        if (depth > 100) return
         try {
             val text = n.text?.toString()?.trim()
             val desc = n.contentDescription?.toString()?.trim()
@@ -152,9 +126,6 @@ class AutomationBridge(private val ctx: Context) {
         return listOf(r.left, r.top, r.right, r.bottom)
     }
 
-    // ═══════════ actions ═══════════
-
-    /** Find an element by label (exact → contains → fuzzy). Returns first match. */
     private fun findElement(label: String): AccessibilityNodeInfo? {
         val svc = LoonaAccessibilityService.instance ?: return null
         val root = svc.rootNode ?: return null
@@ -188,19 +159,17 @@ class AutomationBridge(private val ctx: Context) {
         return null
     }
 
-    /** Verify an action changed the UI by re-snapshotting and comparing. */
     private fun verifyEffect(beforeCount: Int): Boolean {
         Thread.sleep(300)
         val after = snapshot()
-        val afterElements = after["elements"] as? List<*> ?: emptyList()
+        val afterElements = after["elements"] as? List<Map<String, Any?>> ?: emptyList<Map<String, Any?>>()
         return afterElements.size != beforeCount
     }
 
-    /** Tap an element by label. Verifies UI change. */
     fun tapLabel(label: String): Map<String, Any?> {
         val svc = LoonaAccessibilityService.instance ?: return mapOf("ok" to false, "error" to "accessibility service not running")
         val root = svc.rootNode ?: return mapOf("ok" to false, "error" to "no screen content")
-        val before = (snapshot()["elements"] as? List<*>)?.size ?: 0
+        val before = (snapshot()["elements"] as? List<Map<String, Any?>>)?.size ?: 0
         val node = findElement(label) ?: return mapOf("ok" to false, "error" to "element not found: $label")
         try {
             val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -213,15 +182,14 @@ class AutomationBridge(private val ctx: Context) {
         }
     }
 
-    /** Scroll a scrollable element down/up. */
     fun scroll(label: String?, down: Boolean): Map<String, Any?> {
         val svc = LoonaAccessibilityService.instance ?: return mapOf("ok" to false, "error" to "accessibility service not running")
         val root = svc.rootNode ?: return mapOf("ok" to false, "error" to "no screen content")
-        val before = (snapshot()["elements"] as? List<*>)?.size ?: 0
+        val before = (snapshot()["elements"] as? List<Map<String, Any?>>)?.size ?: 0
         val node = if (label != null) findElement(label) else null ?: root
         try {
             val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            val ok = node.performAction(action)
+            val ok = node?.performAction(action) ?: false
             if (!ok) return mapOf("ok" to false, "error" to "scroll not performed")
             Thread.sleep(400)
             val changed = verifyEffect(before)
@@ -231,7 +199,6 @@ class AutomationBridge(private val ctx: Context) {
         }
     }
 
-    /** Type text into an editable field by label. Rejects password fields. Verifies read-back. */
     fun typeText(label: String, text: String): Map<String, Any?> {
         val svc = LoonaAccessibilityService.instance ?: return mapOf("ok" to false, "error" to "accessibility service not running")
         val root = svc.rootNode ?: return mapOf("ok" to false, "error" to "no screen content")
@@ -249,12 +216,8 @@ class AutomationBridge(private val ctx: Context) {
         }
     }
 
-    /** Press the system back key. */
     fun pressBack(): Map<String, Any?> {
         try {
-            // Inject via instrumentation-friendly approach: use the accessibility service if available.
-            val svc = LoonaAccessibilityService.instance
-            // Global back via keyevent dispatch is not directly available; fall back to intent.
             ctx.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
@@ -264,19 +227,9 @@ class AutomationBridge(private val ctx: Context) {
         }
     }
 
-    // ═══════════ multi-step tasks ═══════════
-
-    data class StepResult(val step: Int, val action: String, val ok: Boolean, val evidence: String?, val error: String?)
-
-    /** Run a list of steps sequentially. Each step: {action, target, text}. */
     fun runTask(taskId: String, steps: List<Map<String, String?>>): Map<String, Any?> {
-        cancelled[taskId] = false
         val results = mutableListOf<Map<String, Any?>>()
         for ((i, step) in steps.withIndex()) {
-            if (cancelled[taskId] == true) {
-                results.add(mapOf("step" to i, "action" to step["action"], "skipped" to true, "reason" to "cancelled"))
-                break
-            }
             val action = step["action"] ?: ""
             val target = step["target"]
             val text = step["text"]
@@ -293,17 +246,9 @@ class AutomationBridge(private val ctx: Context) {
                 "ok" to res["ok"], "evidence" to res["evidence"], "error" to res["error"]
             ))
             if (res["ok"] == false) {
-                // one alternative recovery already attempted inside the action; stop here
                 return mapOf("ok" to false, "stoppedAt" to i, "results" to results)
             }
         }
-        cancelled.remove(taskId)
         return mapOf("ok" to true, "results" to results)
-    }
-
-    /** Cancel an in-flight task. */
-    fun cancelTask(taskId: String): Boolean {
-        cancelled[taskId] = true
-        return true
     }
 }

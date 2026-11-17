@@ -4,9 +4,6 @@
     android:canPerformGestures="true"
     android:canRequestEnhancedWebAccessibility="true"
     android:canRequestTouchExplorationMode="false"
-    android:canRequestFingerprintGestures="false"
-    android:canRequestToggleExploreByTouch="false"
-    android:feedbackType="feedbackSpoken"
     android:notificationTimeout="100"
     android:settingsActivity="com.pal9000.robot.MainActivity"
     android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRequestEnhancedWebAccessibility" />
