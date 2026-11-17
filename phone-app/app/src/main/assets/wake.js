@@ -39,17 +39,17 @@
 
     // shape matcher
     dipRatio: 0.72,      // a burst ends once the envelope falls below this fraction of its peak
-    valleyRatio: 0.85,   // valley must fall below this fraction of the smaller peak
+    valleyRatio: 0.95,   // valley must fall below this fraction of the smaller peak
                          // (natural "LOO-na" dips only to ~0.78 of the 2nd peak;
                          //  must stay well under 1.0 so a flat sustain can't pass)
-    peakRatio: 1.6,      // each peak must exceed threshold * peakRatio
-    minBumpMs: 70,       // per-burst duration bounds
-    maxBumpMs: 450,
-    maxValleyMs: 300,    // dip+silence between bursts (word gaps are longer)
-    minSpanMs: 220,      // first burst start -> second burst end
-    maxSpanMs: 750,      // "hello there" spans ~820ms -> rejected
-    endSilenceMs: 260,   // unvoiced this long ends the utterance
-    cooldownMs: 2500,
+    peakRatio: 1.3,      // each peak must exceed threshold * peakRatio
+    minBumpMs: 40,       // per-burst duration bounds
+    maxBumpMs: 600,
+    maxValleyMs: 500,    // dip+silence between bursts (word gaps are longer)
+    minSpanMs: 150,      // first burst start -> second burst end
+    maxSpanMs: 2000,     // allow longer utterances before rejecting
+    endSilenceMs: 300,   // unvoiced this long ends the utterance
+    cooldownMs: 1500,
 
     // diagnostics
     traceBinMs: 50,       // envelope trace resolution inside diagnostics

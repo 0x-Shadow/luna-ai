@@ -1157,7 +1157,7 @@
       // 'both'): the recognizer alone misses short Greek words, so the shape
       // matcher gives a second chance on every voiced utterance.
       if (wakeDet && wakeArmed && (WAKE_MODE === 'both' || envelopeFallback)) {
-        const events = wakeDet.push(t, level * 0.05);
+        const events = wakeDet.push(t, level);
         for (const ev of events) {
           if (ev.type === 'wake' && wakeArmed) onWakeWord('voice');
         }
@@ -1354,7 +1354,8 @@
 
     initFaceApi();
 
-    // Touch: the robot looks at your finger, then smiles at you
+    // Touch: the robot looks at your finger, then smiles at you.
+    // Tap in idle → start listening (press-to-talk when wake word misses).
     head.addEventListener('pointerdown', (e) => {
       const r = head.getBoundingClientRect();
       gazeTX = clamp(((e.clientX - r.left) / r.width - 0.5) * 30, -15, 15);
@@ -1365,6 +1366,10 @@
         setTimeout(() => {
           if (appState === 'idle' && currentMood === 'happy') setMood('neutral');
         }, 1800);
+        // Press-to-talk: tap the head to start listening without wake word.
+        setTimeout(() => {
+          if (appState === 'idle') { setState('listening'); startTurn(''); }
+        }, 200);
       }
     });
 
@@ -2048,6 +2053,14 @@
       let res = null;
       activeHermesProfile = 'root';
 
+      // If Hermes is not configured, tell the user instead of failing silently.
+      if (!cfg.url) {
+        streamSink = null; showThinking('');
+        speakLine(tr('Λίπαμε τη ρύθμιση του Ηρμη. Άνοιξε τις ρυθμίσεις και πρόσθεσε το URL και το κλειδί.',
+                     "Hermes isn't configured yet. Open settings and add the server URL and API key."));
+        return;
+      }
+
       for (let attempt = 0; attempt < 2 && !res; attempt++) {
         const useFast = attempt === 0 && cfg.pathPrefix;
         const attemptCfg = useFast ? cfg : Object.assign({}, cfg, { pathPrefix: '', keyFast: undefined });
@@ -2227,6 +2240,7 @@
     Bridge.on('speech', (ev) => {
       if (ev.type === 'final') console.log('[STT] heard: ' + ev.text);
       if (ev.type === 'partial') {
+        console.log('[STT] partial: ' + (ev.text || ''));
         if (turnActive) showTranscript(ev.text || '');
         else if (!wakeFired) {
           // Fire on a partial that already contains the wake token — this is
