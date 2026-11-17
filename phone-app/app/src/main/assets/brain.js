@@ -327,6 +327,14 @@
     const sw = splitWake(t);
     const body = sw.wake && sw.rest ? sw.rest : t;
 
+    // simple on/off commands for torch, brightness, volume
+    m = /\b(turn|switch|set)\s+(on|off)\s+(the\s+)?(torch|flashlight|flash)\b/.exec(s);
+    if (m) return { type: 'torch', on: m[2] === 'on' };
+    m = /\b(turn|switch|set)\s+(on|off)\s+(the\s+)?(brightness|screen)\b/.exec(s);
+    if (m) return { type: 'brightness', op: m[2] === 'on' ? 'up' : 'down' };
+    m = /\b(turn|switch|set)\s+(on|off)\s+(the\s+)?(volume|sound|music)\b/.exec(s);
+    if (m) return { type: 'volume', op: m[2] === 'on' ? 'up' : 'down' };
+
     // flashlight / torch
     if (/\b(flashlight|torch|flash)\b/.test(s)) {
       const off = /\b(off|disable|stop)\b/.test(s);
@@ -362,6 +370,11 @@
     if (/\b(start|play|put on|resume)\b/.test(s) && /\bmusic\b/.test(s)) return { type: 'music' };
     if (/^(?:start|play|put on|resume)\s+(?:playing\s+)?(?:on\s+)?(?:yt|youtube|spotify|yt music|youtube music)\s*$/.test(s)) return { type: 'music' };
     if (/^(?:start|play)\s+playing\s*$/.test(s)) return { type: 'music' };
+    if (/\b(stop|pause)\s+music\b/.test(s)) return { type: 'music', op: 'pause' };
+    if (/\b(resume|continue)\s+music\b/.test(s)) return { type: 'music', op: 'play' };
+
+    // "open google" / "use google" → open Google search
+    if (/\b(?:open|go to|use)\s+google\b/.test(s)) return { type: 'search', query: '' };
 
     // open an app
     m = /\b(?:open|launch|start|run)\s+(?:the\s+)?(.+?)\s*$/.exec(body.toLowerCase());
