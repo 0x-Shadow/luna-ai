@@ -1,140 +1,204 @@
-# PAL9000 Desktop Robot
+# PAL9000 Desktop Robot — Loona AI Assistant
 
 [![Demo Video](https://github.com/user-attachments/assets/94a80abf-6ac3-4fcf-b8c1-05329994e51a)](https://www.youtube.com/watch?v=wm2kRotLKiM)
 
-Python driven gimbal robot. 2 DOF, powered by a Pico W. Face tracking from a mobile phone. Follows voice and visual cues. Processed locally. 
+A Python-driven 2-DOF gimbal desktop robot with a Pi Pico W "neck," an Android phone as its "brain" (Loona), face tracking, and a local-first voice assistant. Built by **SpaceMonkeyAlfa** — documentation published at [spacemonkeyalfa.com](https://spacemonkeyalfa.com).
 
-After shopping around for various electronic components, I’ve seen some really cool “desktop robot” projects. In need of a new project, I decided to build my own.
+---
 
-The robot would stay on top of a desk, with an LCD for a face, and a “neck” which would allow it to turn left and right, up and down. It would have a camera and microphone, allowing it to see its surroundings, and interact with people. For a proof of concept, I wanted the bot to be able to:
+## Overview
 
-- Use a camera for face tracking
-    
-- Follow faces with its eyes and neck
-    
-- Display cute expressions, which respond in real time
-    
-- Transcribe voices to understand tasks
-    
-- Be able to forward tasks to various APIs or AI providers
-    
+PAL9000 is a desktop robot that sits on your desk, follows you with its eyes and neck, listens to voice commands, and responds through an animated animated face and TTS speech. It combines:
 
-To make this project accessible and affordable, the robot will use an old android phone as it's "brain". As I work on this project, I'll publish my progress and howtos on my blog, [spacemonkeyalfa.com](https://github.com/SpaceMonkeyAlfa/PAL9000-Desktop-Robot/blob/main/spacemonkeyalfa.com), and make all of the code open source in this repo.
+- **Pi Pico W** — 2-DOF gimbal control (pan/tilt servos)
+- **Android phone** — the "brain" running Loona, an AI assistant with wake-word detection, local intent parsing, app control, media sessions, and background operation
+- **MacBook / laptop** — optional LLM server (Hermes / llama.cpp) for complex reasoning, Whisper STT, and calendar integration
+- **ESP32** — optional motion controller for the base
 
-# Setup Guide
+The system is designed around a **three-layer architecture** so simple commands never wait on slow AI reasoning:
 
-This project relies on a lot of pieces of code, running on multiple devices. It's admittedly a bit of a cludge right now, but in the future I plan to make the install and running process simpler, so start the repo if you're interested. 
+| Layer | Responsibility | Runs on |
+|-------|---------------|---------|
+| **Layer 1 — Local Brain** | Wake word, intents, app commands, media controls, fast execution | Android phone |
+| **Layer 2 — Hermes Brain** | Reasoning, conversation, planning, complex requests | NUC / LAN (laptop) |
+| **Layer 3 — Android Bridge** | Apps, notifications, media sessions, device actions | Android phone |
 
-To run this project, you'll need an android phone running `termux`, a webcam, a Mac / MacBook, a Pi Pico W, and a Gimbal robot with 2 degrees of freedom (DOF). You can find a lot of parts and kits for these robots from aliexpress. 
+---
 
-## Robot & Pico
+## Features
 
-This guide assumes you have some experience with hobbyist electronics. It's up to you to find a way to power the servos of the robot (keep in mind they're pretty high current), though [this article from my blog](https://spacemonkeyalfa.com/post/2026/10/09/controlling-robot-joints-with-computer-vision/#:~:text=Wiring%20the%20New%20Gimbal%20Body) explains how I set mine up. You want your pico's ground pin to be connected in parallel to your power source's, and have the control pins of both servos wired to GP0 and GP1. 
+### Core
+- **Face tracking** — camera + AprilTag, follows faces with pan/tilt neck
+- **Animated face** — 15 hand-drawn expressions (white-on-black), blink, boil animation, mouth only while speaking
+- **Wake word** — "Loona" detected via on-device speech recognizer + envelope shape matcher (Greek & English)
+- **Voice responses** — Android TTS with Greek (Google engine) and English support
 
-On the pico, flash `micropython`, and then with a `micropython` IDE add `pico/main.py` (which you'll find in this repo). I'd suggest using either [Thonny](https://thonny.org/) or [ViperIDE](https://viper-ide.org/). If you set your wiring up right, as soon as you disconnect and reconnect your pico to power, the robot's head should jolt up to its (0,0). 
+### Local commands (Layer 1 — instant, no cloud)
+Reminders, alarms, timers; flashlight, brightness, volume; open apps; settings panels (wifi, bluetooth, sound, display); dial, search, YouTube, navigate; torch; battery, time, date; cancel scheduled items.
 
-## MacBook
+### Media control (Layer 3)
+Real **MediaSession** control for Spotify and YouTube Music — play, pause, next, previous, stop, volume, status — with media-key fallback when no session is active.
 
-The MacBook side of things is probably the messiest, due to the deadlines and feature set I was rushing to meet. It needs to be a MacBook for now because the robot uses the `say` command for TTS. In future, I'm going to write a bash script to run all of the servers together, so you won't need 4 terminal sessions open. I also plan to add `espeak-ng` as an alternative to `say`, so you won't be limited to macOS. 
+### Complex reasoning (Layer 2 — Hermes)
+Open-ended conversation, planning, and complex queries routed to a Hermes-compatible LLM server on your LAN, with streaming responses and live "thinking" captions.
 
-If you haven't already, install `homebrew`. Install `llama-cpp` using `brew install lamma-cpp`. Also install `ffmpeg` with `brew install ffmpeg`, portaudio with `brew install portaudio` and python with `brew install python3.13`. Make sure that you're on `python3.13`, because some of the libraries I used break with other python versions. 
+### Background operation
+- **BrainService** foreground service keeps the wake-word loop alive when the app is backgrounded
+- Mic-failure recovery with Google recognizer fallback
+- Battery monitoring with low-battery alerts
 
-Download both `laptop/llm-server` and `laptop/robot-controller` from this repo. Move these to any directory you want, but keep their contents separate. 
+### LAN control panel
+Web control panel served by the phone at `http://<phone-ip>:8899/` — configure Hermes API keys, voice language, view device status, and dispatch commands. Token-protected access.
 
-1) cd into `llm-server`
-2) run `python3 -m venv venv` to set up a new virtual environment ('venv')
-3) run `source venv/bin/activate` to activate the venv
-4) run `pip3 install -r requirements.txt`
-5) run `deactivate` 
-6) cd back to the parent directory
-7) cd into `robot-controller`
-8) repeat steps 2-4 (don't run deactivate!) inside `robot controller`
+---
 
-Now that both the server and controller are set up, you'll need to calibrate your robot. Print out [this AprilTag](https://github.com/AprilRobotics/apriltag-imgs/blob/master/tag36h11/tag36_11_00042.png) (36h11 #42). Plug your webcam and pico into the MacBook. 
-1) Find the serial port being used by the pico: `ls /dev/cu.usb*`. 
-2) For both `calibrate.py` and `track.py`, update the `SERIAL_PORT` variables to match the serial port being used by the pico
-3) Connect a bluetooth keyboard to the macbook.
-4) Use `python3 calibrate.py` to start the calibration
-5) Hold the AprilTag up to your face and move to the highlighted cell from the web cam feed
-6) Once you're in that cell, use WASD on the bluetooth keyboard to control the robot, until it faces the AprilTag
-7) Press enter, and a new cell will be highlighted. Move the AprilTag to the highlighted cell.
-8) Repeat this process until the program finishes
-9) The program should spit out two formulas that'll look something like this, copy them
+## Hardware requirements
+
+- Android phone (Termux-compatible) running as the robot's face/brain
+- Pi Pico W (Micropython) for gimbal servo control
+- 2 DOF gimbal with 2 servos (pan GP0, tilt GP1)
+- Webcam (for face tracking on the laptop)
+- 3D-printed mounting plate (`mount/mounting_plate.stl`)
+- Optional: ESP32 for base motion control
+
+---
+
+## Software architecture
+
 ```
-	target_ud = 15 * (grid_x**2) + 12  
-	target_lr = -0.5 * (grid_y**2) + 16.5 * grid_y + 25
+laptop/llm-server/   — Flask + SocketIO server, Whisper STT, optional Hermes client
+laptop/robot-controller/ — optional desktop controller
+phone-app/           — Android app (Kotlin + WebView), Loona brain + UI
+phone/               — Termux server (legacy)
+pico/main.py         — Micropython gimbal control
+esp32/               — Optional motion controller firmware
 ```
-	
-1) Open `track.py`, find the comment that says 
- ` LOBFs (edit these with your calibration LOBFs)`
- 2) Replace the two lines under it with the formulas you copied.
- 3) Stick the AprilTag to your chest
- 4) Use `python3 track.py` to start the tracker
- 5) The robot should be able to follow you around
 
-Now to set up the LLM server, open a new terminal session and cd into the `llm-server` directory. 
-1) Follow `whisper-cpp`'s quickstart guide on downloading and building `whisper-cpp`
-2) If you did that right, you should end up with a `whisper-cpp` folder inside your `llm-server` directory
-3) Run `ipconfig getifaddr en0` to get your local IP, and note it for later
-4) Run `source venv/bin/activate` to activate the virtual environment you set up earlier
-5) If you want the google calendar integration (as show in the demo):
-	1) Download `extra-tools/cal.py` from this repo and put it in the main `llm-server` directory
-	2) Using Google Cloud, set up a project, and a service account with the default role
-	3) Download the json auth file from the service account, and rename it to `serv-acc.json`, put this in the root `llm-server` directory
-	4) Enable the google calendar API in the Google Cloud project
-	5) Create a new calendar in Google Calendar, and share it with the service account (make sure to give it edit permissions)
-	6) Update the `CALENDAR_ID` variable in `cal.py` to match the new shared calendar
-	7) On line 18, update the `TIMEZONE` value to match your local timezone 
-6) Run `python3 app.py` to run the server
-7) Open another teminal session, and start the llama-cpp server 
-```
-llama-server \ 
--hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL \ 
---jinja \ 
--ngl 999 \ 
--c 16384 \ 
--fa on \ 
---host 127.0.0.1 \ 
---port 8080
-```
-Note the model may take a while to download the first time you run this, so wait for the download to complete before speaking. If you don't have enough unified memory (16GB+) to run `gemma4:12b` at 4b precision, or would like to use another model, just replace `unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL` with any huggingface gguf model.
-## Phone
+### Communication
+- Phone ↔ Laptop: Socket.IO (port 5000) for legacy frame/audio streaming
+- Phone ↔ Hermes: Native HTTP (CORS-free) to `http://<nuc-ip>:8642/v1/chat/completions`
+- Phone ↔ Pico: Serial over USB (GP0/GP1 servos)
 
-Find some way to mount your phone to the "face" of your gimbal robot. `mount/mounting_plate.stl` is a 3D printable plate designed to connect to most 2 DOF robots. Push some 3mm bolts through the mounting plate, so that their heads sit inside its wells. Fill the wells with blue tack to prevent superglue leaking. Then glue the well-side of the plate to the back of a phone case. By pushing the bolts sticking out of the phone case and mount through the front of the robot, you'll be able to tighten some nuts on the opposite side to attach the phone case to the robot. 
+---
 
-Install `termux`. I'd suggest installing it through `f-droid`, since the google play version is old and breaks some packages. 
+## Quick start
 
-1) Download the `phone` directory from this repo into `termux`.  
-2) Run `pkg install python3`
-3) Run `pip3 install flask`
-4) Make sure your phone and the MacBook are on the same WiFi network
-5) Run `python3 app.py {MacBook IP}`, replacing `{MacBook IP}` with the local IP address you got from the MacBook earlier.
+### 1. Pico (gimbal control)
+1. Flash **Micropython** onto the Pico W.
+2. Add `pico/main.py` via Thonny or ViperIDE.
+3. Wire servos: GP0 (pan), GP1 (tilt), with shared ground to your power source.
+4. On power cycle, the head centers to (0,0).
 
-Congratulations! If all went well, you should have a fully working robot, that can track, listen and speak to you as you move around the room.
+### 2. Laptop LLM server (optional — for Hermes reasoning)
+1. Install Homebrew, then: `brew install llama-cpp ffmpeg portaudio python@3.13`
+2. Copy `laptop/llm-server` and `laptop/robot-controller` to your MacBook.
+3. In `llm-server`: `python3 -m venv venv && source venv/bin/activate && pip3 install -r requirements.txt`
+4. Build whisper.cpp (see [whisper-cpp quickstart](https://github.com/ggerganov/whisper.cpp)).
+5. Start llama.cpp server:
+   ```
+   llama-server \
+     -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL \
+     --jinja --ngl 999 -c 16384 --fa on --host 127.0.0.1 --port 8080
+   ```
+6. Get your MacBook's local IP: `ipconfig getifaddr en0`
+7. Start the server: `cd llm-server && source venv/bin/activate && python3 app.py`
 
-# Troubleshooting
+### 3. Android phone (Loona brain)
+1. Install **Termux** (recommend F-Droid version).
+2. Copy `phone-app/` into Termux.
+3. `pkg install python3 && pip3 install flask`
+4. Ensure phone and MacBook are on the same Wi-Fi.
+5. Run: `python3 app.py <MacBook-IP>`
 
-If the `track.py` suddenly crashes, it's often because your webcam connection has been disconnected. Similar for `llm-server/app.py`, if your microphone disconnects. 
+### 4. Calibrate face tracking
+1. Print the AprilTag (tag36h11 #42).
+2. Run `calibrate.py` on the laptop, update `SERIAL_PORT` to your Pico's port.
+3. Hold the tag to your face, use WASD to center it in each grid cell, press Enter to advance.
+4. Copy the two formula lines into `track.py` (under "LOBFs (edit these)").
+5. Run `python3 track.py` — the robot follows your chest tag.
 
-If the robot's tracking is unresponsive, check if `track.py`'s log has this warning:
-```
-WARNING: Could not open serial port /dev/cu.usbmodem1101
-```
-this means that the pico is either disconnected, busy (ie `thonny` or `ViperIDE` is connected to it), or has connected on a different port. Once you're sure the pico's not busy, and is plugged in, simply run `ls /dev/cu.usb*` to get the new serial port, and update `track.py`. To avoid having to update the serial port each time, try to always use the same physical port for the pico. 
+---
 
-If the bot is taking a long time to respond, and you don't see any errors in `llm-server/app.py`, it might be that `llama-cpp` is just waiting for some memory to be freed up, to load the model's weights in. You can free this memory up yourself by just closing apps open in the background. Generation might also be slowed if you're on Low Power mode, so keep that off.
+## Configuration
 
-# Adding your own tools
+### Hermes AI (Layer 2 reasoning)
+Loona contacts Hermes at `http://<nuc-ip>:8642/v1/chat/completions`. Configure in the phone app settings (hold bottom-left corner) or the LAN panel:
 
-PAL uses a modular system to handle tools. If you want to add your own tools, use `extra-tools/cal.py` as an example. The basics are to:
+- **Server URL** — e.g. `http://192.168.1.62:8642`
+- **API key** — your Hermes Bearer token
+- **Fast profile** — `/p/loona-fast/` (lightweight model, attempted first with a separate key; root `/` is the fallback)
 
-1) Have `from registry import tool` in your imports
-2) Use the `@tool` decorator above your function
-3) Include a docstring comment in your function to explain its purpose
-4) Set the types for the function's inputs
-5) Place the script containing your tool function in the main `llm-server` directory
-6) Include `import {script_name}` in the imports at the top of `llm-server/app.py`, replacing `{script_name}` with the name of your tool script (without the .py extension)
+Keys are never logged or displayed in error messages.
 
-# Changing the system prompt
+### Voice language
+Supports **Greek (el-GR)** and **English (en-US)**. Greek TTS uses the Google engine; English uses the system default. Set in settings or the LAN panel.
 
-To change PAL's system prompt, just edit the multi line `TRIAGE_PROMPT` variable in `llm-server/app.py`
+---
+
+## Voice commands
+
+Say "Loona" (or "Λούνα"), then your command:
+
+| Category | Examples |
+|----------|----------|
+| Media | "play spotify", "pause", "skip", "previous", "volume 50" |
+| Apps | "open spotify", "open youtube and play", "open google" |
+| Search | "search google for linux tutorials", "use google" |
+| Reminders | "remind me to water plants in 10 minutes" |
+| Alarms/timers | "set an alarm for 7 am", "start a timer for 5 minutes" |
+| Device | "flashlight on", "brightness up", "volume down", "what's my battery" |
+| Navigation | "navigate to the nearest cafe" |
+| Calls | "call mom" |
+| Info | "what time is it", "what's the date" |
+
+Local commands execute instantly without touching Hermes. Anything else is routed to Hermes for reasoning.
+
+---
+
+## LAN control panel
+
+The phone serves a web panel at `http://<phone-ip>:8899/` (token-protected). Use it to:
+
+- View device status (IP, battery, permissions, Hermes reachability)
+- Configure Hermes URL, API key, model, fast profile
+- Set voice language and whisper options
+- Test Hermes connectivity
+- Dispatch microphone commands remotely
+
+Access from any device on the same Wi-Fi. Enter the panel token when prompted.
+
+---
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Wake word doesn't fire | Tap the robot's face to start listening (press-to-talk fallback). Check mic permission. |
+| "Can't reach my brain" | Hermes isn't configured. Set the server URL and API key in settings. |
+| Panel won't load | Phone and viewer must be on the same Wi-Fi. Visit `http://<phone-ip>:8899/` and enter the token. |
+| Tracking unresponsive | Verify Pico serial port in `calibrate.py`/`track.py`. Reconnect Pico. |
+| TTS not speaking | Install the Google TTS engine for Greek; set correct language in settings. |
+| App opens but doesn't play | Say "open [app] and play" — the app opens, then media play is sent after 2.5s. |
+
+---
+
+## Phase 2 roadmap
+
+- [x] Hermes fast-profile auth with root fallback
+- [x] Real MediaSession media control (Spotify / YouTube Music)
+- [x] Mika-inspired automation bridge (verified UI actions, task cancellation)
+- [x] Background wake-word foreground service (Android 14+ compatible)
+- [x] Risk-based confirmations for destructive actions
+- [x] Configurable Whisper endpointing + per-turn latency logging
+- [ ] Full Mika accessibility automation integration
+- [ ] Multi-step visual task execution
+
+---
+
+## License
+
+MIT License. See [LICENSE.md](LICENSE.md).
+
+---
+
+*Built by SpaceMonkeyAlfa. Progress updates at [spacemonkeyalfa.com](https://spacemonkeyalfa.com).*
