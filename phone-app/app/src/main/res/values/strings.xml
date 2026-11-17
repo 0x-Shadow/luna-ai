@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">PAL9000</string>
+    <string name="accessibility_service_description">Loona accessibility service — reads the screen and performs tap, scroll, and text-entry actions for app control.</string>
+</resources>

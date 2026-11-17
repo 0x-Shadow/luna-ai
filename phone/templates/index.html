@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
     <title>PAL9000 Client</title>
     <!-- face-api.js & socket.io -->
     <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
@@ -11,7 +13,7 @@
     html, body {
       height: 100%;
       margin: 0;
-      background: #000a3f;
+      background: #000000 !important;
       overflow: hidden;
     }
     video { display: none; }
@@ -32,7 +34,7 @@
       height: 99vh;
       max-width: 99vw;
       z-index: 0;
-      background-color: #fff;
+      background-color: #000000;
       transform: translate(-50%, -50%);
     }
     .mask-layer {
@@ -49,64 +51,395 @@
       left: 50%;
       top: 50%; 
       transform: translate(-50%, -50%);
-      transition: left 0.15s ease-out, top 0.15s ease-out;
+      transition: left 0.15s ease-out, top 0.15s ease-out, transform 0.3s ease;
     }
-    .mouth-layer {
-      height: 20vh;
-      width: auto;
-      max-width: 100vw;
-      z-index: 4;
-      top: 20%;
-      display: block;
-      transform: translate(-50%, -20%) scaleY(1);
-      transform-origin: center center;
-    }
-    .mouth-layer.is-talking {
-      animation: talking 0.22s ease-in-out infinite alternate;
-    }
-    .eyelid-layer {
-      z-index: 2;
-      height: 50vh;
-      width: auto;
-      max-width: 100vw;
-      position: fixed;  
-      transition: transform 100ms ease;
+
+    /* ── Expression eyes (exact match to your reference image) ── */
+    .expression-layer {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 44.5vh;
+      height: 44.5vh;
       transform: translate(-50%, -50%);
+      z-index: 2;
+      pointer-events: none;
+      display: none;
     }
-    .LBLid {
-      top: 100%;
-      left: calc((100vw - 1600vh/9)/2 + 10px);
-      transform: translateY(0);
+
+    .expression-eye {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: #000;
     }
-    .RBLid {
-      top: 100%;
-      right: calc((100vw - 1600vh/9)/2 + 10px);
-      transform: translateY(0);
+
+    /* ── Row 1 ── */
+
+    /* 1. Happy - curved up smiling eyes ⌒ ⌒ */
+    .expr-happy .expression-eye {
+      width: 34px;
+      height: 14px;
+      border-radius: 50% / 100%;
+      background: transparent;
+      border-bottom: 6px solid #000;
     }
-    .LTLid {
-      top: -50%;
-      left: calc((100vw - 1600vh/9)/2 + 10px);
-      transform: translateY(0);
+    .expr-happy .expression-eye.left { left: 33%; }
+    .expr-happy .expression-eye.right { left: 67%; }
+
+    /* 2. Alert/Surprised - vertical lines with eyebrows ┃ ┃ with ⌒ ⌒ above */
+    .expr-alert .expression-eye {
+      width: 8px;
+      height: 34px;
+      border-radius: 2px;
+      background: #000;
     }
-    .RTLid {
-      top: -50%;
-      right: calc((100vw - 1600vh/9)/2 + 10px);
-      transform: translateY(0);
+    .expr-alert .expression-eye.left { left: 38%; }
+    .expr-alert .expression-eye.right { left: 60%; }
+    .expr-alert .expression-eye::before {
+      content: '';
+      position: absolute;
+      top: -10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 18px;
+      height: 4px;
+      border-radius: 50% / 100%;
+      border-bottom: 4px solid #000;
+      background: transparent;
     }
-    .LBLid.closed, .RBLid.closed {
-      transform: translateY(-130%) !important;
+
+    /* 3. Winking/Skeptical - one wink ⌣ one square ■ */
+    .expr-wink .expression-eye.left {
+      width: 26px;
+      height: 10px;
+      border-radius: 50% / 100%;
+      background: transparent;
+      border-bottom: 5px solid #000;
+      transform: translateY(-50%) rotate(-15deg);
+      left: 35%;
     }
-    .RTLid.closed, .LTLid.closed {
-      transform: translateY(130%) !important;
+    .expr-wink .expression-eye.right {
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      background: #000;
+      left: 65%;
     }
+
+    /* ── Row 2 ── */
+
+    /* 4. Content/Relaxed - curved down eyebrows with squares below ⌒ with ▣ ▣ */
+    .expr-content .expression-eye {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      background: #000;
+    }
+    .expr-content .expression-eye.left { left: 33%; }
+    .expr-content .expression-eye.right { left: 67%; }
+    .expr-content .expression-eye::before {
+      content: '';
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 28px;
+      height: 6px;
+      border-radius: 50% / 100%;
+      border-bottom: 5px solid #000;
+      background: transparent;
+    }
+
+    /* 5. Shy/Cautious - > < angled */
+    .expr-shy .expression-eye {
+      width: 0;
+      height: 0;
+      border-left: 16px solid #000;
+      border-top: 10px solid transparent;
+      border-bottom: 10px solid transparent;
+    }
+    .expr-shy .expression-eye.left {
+      left: 40%;
+      transform: translateY(-50%) rotate(0deg);
+    }
+    .expr-shy .expression-eye.right {
+      left: 64%;
+      transform: translateY(-50%) rotate(180deg);
+    }
+
+    /* 6. Neutral/Straight - vertical lines │ │ */
+    .expr-neutral .expression-eye {
+      width: 8px;
+      height: 30px;
+      border-radius: 2px;
+      background: #000;
+    }
+    .expr-neutral .expression-eye.left { left: 38%; }
+    .expr-neutral .expression-eye.right { left: 60%; }
+
+    /* ── Row 3 ── */
+
+    /* 7. Worried - curved up worried eyebrows ⌒ ⌒ (upward arc) */
+    .expr-worried .expression-eye {
+      width: 34px;
+      height: 14px;
+      border-radius: 50% / 100%;
+      background: transparent;
+      border-top: 6px solid #000;
+      transform: translateY(-50%) rotate(180deg);
+    }
+    .expr-worried .expression-eye.left { left: 33%; }
+    .expr-worried .expression-eye.right { left: 67%; }
+
+    /* 8. Happy Smile - curved up smile eyes ⌒ ⌒ (wider) */
+    .expr-smile .expression-eye {
+      width: 42px;
+      height: 16px;
+      border-radius: 50% / 100%;
+      background: transparent;
+      border-bottom: 6px solid #000;
+    }
+    .expr-smile .expression-eye.left { left: 30%; }
+    .expr-smile .expression-eye.right { left: 70%; }
+
+    /* 9. Square eyes - square dots ■ ■ */
+    .expr-square .expression-eye {
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      background: #000;
+    }
+    .expr-square .expression-eye.left { left: 38%; }
+    .expr-square .expression-eye.right { left: 62%; }
+
+    /* ── Row 4 ── */
+
+    /* 10. Dead/Dizzy - X X */
+    .expr-dead .expression-eye {
+      width: 2px;
+      height: 28px;
+      background: transparent;
+      border: 4px solid #000;
+      box-sizing: border-box;
+    }
+    .expr-dead .expression-eye.left {
+      left: 37%;
+      transform: translateY(-50%) rotate(45deg);
+    }
+    .expr-dead .expression-eye.right {
+      left: 63%;
+      transform: translateY(-50%) rotate(-45deg);
+    }
+
+    /* 11. Neutral/Dots - two dots connected by line ●─● */
+    .expr-dots .expression-eye {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #000;
+    }
+    .expr-dots .expression-eye.left { left: 38%; }
+    .expr-dots .expression-eye.right { left: 62%; }
+    .expr-dots .expression-layer::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px;
+      height: 2px;
+      background: #000;
+      border-radius: 1px;
+    }
+
+    /* 12. Shy angles - > < */
+    .expr-shyangles .expression-eye {
+      width: 0;
+      height: 0;
+      border-left: 16px solid #000;
+      border-top: 10px solid transparent;
+      border-bottom: 10px solid transparent;
+    }
+    .expr-shyangles .expression-eye.left {
+      left: 40%;
+      transform: translateY(-50%) rotate(0deg);
+    }
+    .expr-shyangles .expression-eye.right {
+      left: 64%;
+      transform: translateY(-50%) rotate(180deg);
+    }
+
+    /* Show expression layer and hide SVG pupils */
+    .show-expressions .pupil-layer {
+      display: none !important;
+    }
+    .show-expressions .expression-layer {
+      display: block !important;
+    }
+
+    /* Listening: eyes widen, bright alert glow */
+    .pupil-layer.is-listening {
+      transform: translate(-50%, -50%) scale(1.2);
+      filter: drop-shadow(0 0 16px rgba(0, 200, 255, 0.8));
+      transition: transform 0.3s ease, filter 0.3s ease;
+    }
+
+    /* Woke up: energetic pulse */
+    .pupil-layer.is-waking {
+      animation: wakePulse 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    @keyframes wakePulse {
+      0%   { transform: translate(-50%, -50%) scale(1); filter: drop-shadow(0 0 8px rgba(0,150,255,0.3)); }
+      50%  { transform: translate(-50%, -50%) scale(1.4); filter: drop-shadow(0 0 24px rgba(0,220,255,0.9)); }
+      100% { transform: translate(-50%, -50%) scale(1.2); filter: drop-shadow(0 0 16px rgba(0,200,255,0.8)); }
+    }
+
+    /* Thinking: eyes scan, dreamy */
+    .pupil-layer.is-thinking {
+      animation: thinkingScan 2s ease-in-out infinite;
+      filter: drop-shadow(0 0 12px rgba(150, 100, 255, 0.6));
+    }
+
+    @keyframes thinkingScan {
+      0%   { left: 40%; top: 50%; }
+      25%  { left: 60%; top: 40%; }
+      50%  { left: 40%; top: 60%; }
+      75%  { left: 60%; top: 60%; }
+      100% { left: 40%; top: 50%; }
+    }
+
+    /* Surprised/happy: eyes wider */
+    .pupil-layer.is-happy {
+      transform: translate(-50%, -50%) scale(1.3);
+      filter: drop-shadow(0 0 20px rgba(0, 255, 150, 0.7));
+    }
+
+    /* Listening glow ring */
+    .listening-ring {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: 75vh;
+      height: 75vh;
+      transform: translate(-50%, -50%);
+      border: 4px solid rgba(0, 200, 255, 0);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+      transition: all 0.4s ease;
+    }
+
+    .listening-ring.active {
+      box-shadow: 0 0 40px rgba(0, 200, 255, 0.5);
+      border-color: rgba(0, 200, 255, 0.9);
+      animation: listeningPulse 2.5s ease-in-out infinite;
+    }
+
+    @keyframes listeningPulse {
+      0%   { transform: translate(-50%, -50%) scale(1); box-shadow: 0 0 25px rgba(0, 200, 255, 0.3); }
+      50%  { transform: translate(-50%, -50%) scale(1.08); box-shadow: 0 0 50px rgba(0, 200, 255, 0.7); }
+      100% { transform: translate(-50%, -50%) scale(1); box-shadow: 0 0 25px rgba(0, 200, 255, 0.3); }
+    }
+
+    /* Alert eyelids when listening */
+    .eyelid-layer.is-listening {
+      transition: transform 0.3s ease;
+    }
+    .LBLid.is-listening.closed, .RBLid.is-listening.closed {
+      transform: translateY(-70%) !important; /* more open when listening */
+    }
+    .RTLid.is-listening.closed, .LTLid.is-listening.closed {
+      transform: translateY(70%) !important;
+    }
+
+    /* Mouth expressions */
+    .mouth-layer {
+      transition: transform 0.2s ease, filter 0.2s ease;
+    }
+
+    /* Listening: slightly open, cute */
+    .mouth-layer.is-listening {
+      transform: translate(-50%, -20%) scaleY(1.25);
+      filter: drop-shadow(0 0 10px rgba(0, 200, 255, 0.5));
+    }
+
+    /* Speaking: sync with audio */
+    .mouth-layer.is-speaking {
+      animation: talking 0.12s ease-in-out infinite alternate;
+      filter: drop-shadow(0 0 12px rgba(255, 210, 100, 0.6));
+    }
+
+    /* Happy: big smile */
+    .mouth-layer.is-happy {
+      transform: translate(-50%, -20%) scaleY(1.6);
+      filter: drop-shadow(0 0 12px rgba(0, 255, 150, 0.6));
+    }
+
+    /* Sleepy: small mouth */
+    .mouth-layer.is-sleepy {
+      transform: translate(-50%, -20%) scaleY(0.8);
+      filter: drop-shadow(0 0 8px rgba(100, 150, 255, 0.4));
+    }
+
+    /* Audio meter */
+    .audio-meter {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 55vw;
+      max-width: 350px;
+      height: 5px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 3px;
+      overflow: hidden;
+      z-index: 90;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .audio-meter.active {
+      opacity: 1;
+    }
+    .audio-meter-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #00d4ff, #00ffaa, #70ff70);
+      width: 0%;
+      border-radius: 3px;
+      transition: width 0.04s ease;
+      box-shadow: 0 0 10px rgba(0, 212, 255, 0.6);
+    }
+
+    /* Wake word status */
+    #wake-status {
+      position: fixed;
+      top: 70px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #00d4ff;
+      font-family: 'Courier New', monospace;
+      font-size: 15px;
+      font-weight: bold;
+      z-index: 101;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      text-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
+      letter-spacing: 2px;
+    }
+    #wake-status.visible {
+      opacity: 1;
+    }
+
     .mouth-box {
       overflow: visible;
       position: relative;
       height: 20vh;
-      width: 40vw;
+      width: 42vw;
       max-width: 100vw;
       z-index: 4;
-      top: 80%;
+      top: 78%;
       left: 50%;
       transform: translate(-50%, -30%);
     }
@@ -118,19 +451,19 @@
 
     #status-banner {
       position: fixed;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
+      top: 0;
+      left: 0;
+      right: 0;
+      background: rgba(0, 0, 0, 0.9);
       color: #fff;
-      background: rgba(0,0,0,0.7);
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 13px;
-      font-family: sans-serif;
+      padding: 10px;
+      text-align: center;
       z-index: 100;
-      pointer-events: none;
-      transition: opacity 0.5s ease;
-    }
+      font-family: sans-serif;
+      cursor: pointer;
+      display: none; /* Hide by default - native app auto-unlocks */
+}
+
     .book-layer {
       position: absolute;
       left: 50%;
@@ -167,7 +500,9 @@
 
   <div id="container" class="container">
     <div class="svg-layer midground"></div>
+    <div class="listening-ring" id="listening-ring"></div>
     <img id="pupils" class="svg-layer pupil-layer" src="/static/PupilL.svg" alt="Pupil" />
+    <div id="expression-eyes" class="expression-layer"></div>
     <img class="svg-layer mask-layer" src="/static/Mask.svg" alt="Mask" />
     <div class="mouth-box">
       <img id="mouth" class="svg-layer mouth-layer" src="/static/Mouth.svg" alt="Mouth" />
@@ -179,9 +514,17 @@
     <img id="book" class="book-layer" src="/static/book.svg" alt="Book" />
   </div>
 
+  <!-- Listening audio meter -->
+  <div class="audio-meter" id="audio-meter">
+    <div class="audio-meter-bar" id="audio-meter-bar"></div>
+  </div>
+
+  <!-- Wake word status -->
+  <div id="wake-status">Listening for "Siri"...</div>
+
   <video id="webcam" autoplay muted playsinline></video>
 
-  <!-- 1. Start Camera & Face Tracking -->
+  <!-- 1. Start Camera & Face Tracking + Idle Look-Around -->
   <script>
     const svgElement = document.querySelector('.pupil-layer');
     const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
@@ -201,81 +544,464 @@
     }
 
     const detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 });
-    let shiftX = 50, shiftY = 50;
+
+    // ── Idle look-around state ──
+    let shiftX = 50, shiftY = 50;          // current pupil position (%)
+    let targetX = 50, targetY = 50;        // target pupil position (%)
+    let idleTimer = 0;                     // ms since last idle target change
+    let idleInterval = 3000;               // ms between idle target changes
+    let isTrackingFace = false;            // is face-api currently locking on a face?
+
+    // ── Corner + random targets for idle looking ──
+    const IDLE_TARGETS = [
+      { x: 15, y: 15 },   // top-left corner
+      { x: 85, y: 15 },   // top-right corner
+      { x: 15, y: 85 },   // bottom-left corner
+      { x: 85, y: 85 },   // bottom-right corner
+      { x: 50, y: 50 },   // center
+      { x: 30, y: 50 },   // left
+      { x: 70, y: 50 },   // right
+      { x: 50, y: 30 },   // up
+      { x: 50, y: 70 },   // down
+    ];
+
+    function pickIdleTarget() {
+      // 60% chance to pick a corner/edge, 40% fully random
+      if (Math.random() < 0.6) {
+        const t = IDLE_TARGETS[Math.floor(Math.random() * IDLE_TARGETS.length)];
+        targetX = t.x;
+        targetY = t.y;
+      } else {
+        targetX = Math.random() * 60 + 20;  // 20-80%
+        targetY = Math.random() * 60 + 20;  // 20-80%
+      }
+      // Occasionally hold a gaze longer (15% chance)
+      idleInterval = Math.random() < 0.15 ? getRandom(4000, 8000) : getRandom(2000, 5000);
+    }
+
+    function getRandom(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    // Smoothly interpolate toward current target
+    function updateIdleLook() {
+      if (isTrackingFace) return; // face tracking overrides idle
+
+      const now = Date.now();
+      if (now - idleTimer >= idleInterval) {
+        pickIdleTarget();
+        idleTimer = now;
+      }
+
+      // Ease toward target (smooth, not instant)
+      shiftX += (targetX - shiftX) * 0.15;
+      shiftY += (targetY - shiftY) * 0.15;
+
+      svgElement.style.left = `${shiftX}%`;
+      svgElement.style.top = `${shiftY}%`;
+    }
 
     document.getElementById('webcam').addEventListener('play', () => {
       async function trackFace() {
         if (svgElement.classList.contains('is-reading')) {
+          updateIdleLook();
           requestAnimationFrame(trackFace);
           return;
         }
         const v = document.getElementById('webcam');
         const detection = await faceapi.detectSingleFace(v, detectorOptions);
+
         if (detection) {
+          isTrackingFace = true;
           const centerX = detection.box.x + (detection.box.width / 2);
           const centerY = detection.box.y + (detection.box.height / 2);
-          const percentX = Math.abs(100 - (centerX / v.videoWidth) * 100);
-          const percentY = Math.abs(100 - (centerY / v.videoHeight) * 100);
 
-          shiftX = 0.2 * ((percentX - 50) / 5 + 50) + 0.8 * shiftX;
-          shiftY = 0.2 * (-(percentY - 50) / 2 + 50) + 0.8 * shiftY;
+          // Map face position to screen percentages (0-100)
+          // Mirror X for selfie view (front camera is flipped horizontally)
+          // Keep Y as-is so face near top of frame = eyes look up, face near bottom = eyes look down
+          let percentX = 100 - (centerX / v.videoWidth) * 100;
+          let percentY = (centerY / v.videoHeight) * 100;
+
+          // Clamp to reasonable range so eyes don't go to extreme edges
+          percentX = Math.max(20, Math.min(80, percentX));
+          percentY = Math.max(20, Math.min(80, percentY));
+
+          // Smoothly follow the face
+          shiftX += (percentX - shiftX) * 0.2;
+          shiftY += (percentY - shiftY) * 0.2;
 
           svgElement.style.left = `${shiftX}%`;
           svgElement.style.top = `${shiftY}%`;
+        } else {
+          isTrackingFace = false;
+          updateIdleLook();
         }
+
         requestAnimationFrame(trackFace);
       }
       trackFace();
     });
 
     initFaceApi();
+
+    // Pick first idle target immediately
+    pickIdleTarget();
   </script>
 
-  <!-- 2. Tap to Unlock Fullscreen & Audio Autoplay -->
+  <!-- 2. Auto-unlock for native app / Tap to Unlock for browser -->
   <script>
     let unlocked = false;
-    document.addEventListener('click', () => {
-      if (document.body.requestFullscreen) document.body.requestFullscreen().catch(() => {});
-      if (!unlocked) {
+
+    // Native WebView app injects this flag; browser does not
+    const isNativeApp = window.isNativeApp || false;
+
+    function doUnlock() {
+      if (unlocked) return;
+      unlocked = true;
+
+      // Start mic stream (native app already has permissions)
+      startMicStream();
+
+      const banner = document.getElementById("status-banner");
+      if (banner) {
+        banner.style.opacity = "0";
+        setTimeout(() => banner.remove(), 500);
+      }
+
+      // Request fullscreen if in browser
+      if (!isNativeApp && document.body.requestFullscreen) {
+        document.body.requestFullscreen().catch(() => {});
+      }
+    }
+
+    if (isNativeApp) {
+      // Auto-unlock immediately in native app
+      doUnlock();
+    } else {
+      document.addEventListener('click', () => {
         const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
         silent.play().then(() => {
-          unlocked = true;
-          const banner = document.getElementById("status-banner");
-          if (banner) {
-            banner.style.opacity = "0";
-            setTimeout(() => banner.remove(), 500);
-          }
+          doUnlock();
         }).catch(() => {});
-      }
-    });
+      });
+    }
   </script>
 
-  <!-- 3. Eye Blinking Loop -->
+  <!-- 3. Wake Word & Listening System -->
+  <script>
+    // ── State ──
+    let state = 'idle'; // idle | listening | waking | thinking | speaking
+    let audioContext = null;
+    let analyser = null;
+    let micStream = null;
+    let animationFrameId = null;
+
+    const listeningRing = document.getElementById('listening-ring');
+    const audioMeter = document.getElementById('audio-meter');
+    const audioMeterBar = document.getElementById('audio-meter-bar');
+    const wakeStatus = document.getElementById('wake-status');
+    const pupils = document.getElementById('pupils');
+    const mouth = document.getElementById('mouth');
+    const book = document.getElementById('book');
+    const expressionLayer = document.getElementById('expression-eyes');
+    const container = document.getElementById('container');
+    const eyelids = document.querySelectorAll('.eyelid-layer');
+
+    let currentExpression = 'none';
+
+    function setExpression(type) {
+      if (currentExpression === type) return;
+      currentExpression = type;
+
+      expressionLayer.className = 'expression-layer';
+
+      if (type === 'none') {
+        container.classList.remove('show-expressions');
+        pupils.style.display = '';
+        return;
+      }
+
+      container.classList.add('show-expressions');
+      pupils.style.display = 'none';
+      expressionLayer.classList.add(`expr-${type}`);
+
+      if (expressionLayer.children.length === 0) {
+        const left = document.createElement('div');
+        left.className = 'expression-eye left';
+        const right = document.createElement('div');
+        right.className = 'expression-eye right';
+        expressionLayer.appendChild(left);
+        expressionLayer.appendChild(right);
+      }
+    }
+
+    const WAKE_PHRASE = "siri";
+    const ENERGY_THRESHOLD = -35; // dB, more sensitive
+    let wakeWordBuffer = []; // stores recent energy levels for pattern detection
+    const WAKE_WINDOW_MS = 2000; // look for wake word pattern in 2s window
+    let wakeAudioContext = null;
+    let wakeAnalyser = null;
+    let wakeAnimationFrameId = null;
+
+    // ── State helpers ──
+    function setState(newState) {
+      if (state === newState) return;
+      const prev = state;
+      state = newState;
+
+      // Exit prev state
+      if (prev === 'listening') exitListening();
+      if (prev === 'waking') exitWaking();
+      if (prev === 'thinking') exitThinking();
+      if (prev === 'speaking') exitSpeaking();
+
+      // Enter new state
+      if (newState === 'listening') enterListening();
+      if (newState === 'waking') enterWaking();
+      if (newState === 'thinking') enterThinking();
+      if (newState === 'speaking') enterSpeaking();
+
+      console.log(`[State] ${prev} → ${newState}`);
+    }
+
+    // ── Listening (wake word mode) ──
+    function enterListening() {
+      listeningRing.classList.add('active');
+      audioMeter.classList.add('active');
+      pupils.classList.add('is-listening');
+      mouth.classList.add('is-listening');
+      eyelids.forEach(lid => lid.classList.add('is-listening'));
+      wakeStatus.textContent = `Listening for "${WAKE_PHRASE}"...`;
+      wakeStatus.classList.add('visible');
+      startWakeAudio();
+      setExpression('alert');
+    }
+
+    function exitListening() {
+      listeningRing.classList.remove('active');
+      audioMeter.classList.remove('active');
+      pupils.classList.remove('is-listening');
+      mouth.classList.remove('is-listening');
+      eyelids.forEach(lid => lid.classList.remove('is-listening'));
+      wakeStatus.classList.remove('visible');
+      stopWakeAudio();
+      setExpression('none');
+    }
+
+    // ── Waking (wake word detected) ──
+    function enterWaking() {
+      pupils.classList.add('is-waking');
+      mouth.classList.remove('is-listening');
+      setExpression('happy');
+      // Play ack sound via server
+      socket.emit('play_ack');
+      setTimeout(() => {
+        pupils.classList.remove('is-waking');
+        // After wake, go to listening for the command
+        setState('listening');
+      }, 600);
+    }
+
+    function exitWaking() {
+      pupils.classList.remove('is-waking');
+    }
+
+    // ── Thinking (Hermes processing) ──
+    function enterThinking() {
+      book.classList.add('visible');
+      pupils.classList.add('is-reading');
+      pupils.classList.add('is-thinking');
+      mouth.classList.remove('is-speaking');
+      mouth.classList.remove('is-listening');
+      wakeStatus.textContent = 'Thinking...';
+      wakeStatus.classList.add('visible');
+      setExpression('dots');
+    }
+
+    function exitThinking() {
+      book.classList.remove('visible');
+      pupils.classList.remove('is-reading');
+      pupils.classList.remove('is-thinking');
+      wakeStatus.classList.remove('visible');
+      setExpression('none');
+    }
+
+    // ── Speaking (TTS playing) ──
+    function enterSpeaking() {
+      mouth.classList.add('is-speaking');
+      mouth.classList.remove('is-listening');
+      wakeStatus.textContent = 'Speaking...';
+      wakeStatus.classList.add('visible');
+      setExpression('happy');
+    }
+
+    function exitSpeaking() {
+      mouth.classList.remove('is-speaking');
+      wakeStatus.classList.remove('visible');
+      setExpression('none');
+    }
+
+    // ── Wake word audio meter (dedicated context for detection) ──
+    function startWakeAudio() {
+      if (wakeAudioContext) return;
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        wakeAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+        if (wakeAudioContext.state === 'suspended') {
+          wakeAudioContext.resume();
+        }
+        wakeAnalyser = wakeAudioContext.createAnalyser();
+        wakeAnalyser.fftSize = 512;
+        const source = wakeAudioContext.createMediaStreamSource(stream);
+        source.connect(wakeAnalyser);
+
+        const dataArray = new Uint8Array(wakeAnalyser.frequencyBinCount);
+        let lastPeakTime = 0;
+        let peakCount = 0;
+
+        function meterLoop() {
+          wakeAnalyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          const avg = sum / dataArray.length;
+          const percent = Math.min(100, (avg / 255) * 150);
+          audioMeterBar.style.width = `${percent}%`;
+
+          const now = Date.now();
+          const db = 20 * Math.log10(Math.max(avg, 1) / 255);
+
+          // Wake word detection: "si-ri" = two peaks with dip
+          if (state === 'idle') {
+            wakeWordBuffer.push({ t: now, avg });
+            wakeWordBuffer = wakeWordBuffer.filter(b => now - b.t < WAKE_WINDOW_MS);
+
+            if (avg > 140) { // strong audio peak
+              if (now - lastPeakTime > 200) {
+                peakCount++;
+                lastPeakTime = now;
+              }
+              if (peakCount >= 2) {
+                // Check dip between peaks
+                const peaks = wakeWordBuffer.filter(b => b.avg > 120).slice(-2);
+                if (peaks.length === 2) {
+                  const between = wakeWordBuffer.filter(b => b.t > peaks[0].t && b.t < peaks[1].t);
+                  const minBetween = between.length > 0 ? Math.min(...between.map(b => b.avg)) : 0;
+                  if (peaks[0].avg - minBetween > 35) {
+                    console.log("[WAKE] 'Siri' detected locally!");
+                    wakeWordBuffer = [];
+                    peakCount = 0;
+                    setState('waking');
+                    socket.emit('wake_detected', { phrase: WAKE_PHRASE });
+                  }
+                }
+              }
+            }
+          }
+
+          wakeAnimationFrameId = requestAnimationFrame(meterLoop);
+        }
+        meterLoop();
+      }).catch(err => {
+        console.error("[Wake] Mic access failed:", err);
+      });
+    }
+
+    function stopWakeAudio() {
+      if (wakeAnimationFrameId) cancelAnimationFrame(wakeAnimationFrameId);
+      if (wakeAudioContext) wakeAudioContext.close();
+      wakeAudioContext = null;
+      wakeAnalyser = null;
+      audioMeterBar.style.width = '0%';
+    }
+
+    // ── Socket events ──
+    socket.on("wake_detected", () => {
+      console.log("[Wake] Wake word detected by server!");
+      setState('waking');
+    });
+
+    socket.on("start_listening", () => {
+      setState('listening');
+    });
+
+    socket.on("stop_listening", () => {
+      if (state === 'listening') setState('idle');
+    });
+
+    socket.on("thinking", () => {
+      setState('thinking');
+    });
+
+    socket.on("speaking", () => {
+      setState('speaking');
+    });
+
+    socket.on("done_speaking", () => {
+      setState('idle');
+    });
+
+    // ── Wake word phrase config ──
+    // Server will do actual wake word detection on the audio stream.
+    // The phone just shows the visual states based on server events.
+  </script>
+
+  <!-- 3. Eye Blinking Loop (human-like) -->
   <script>
     const eyelids = document.querySelectorAll('.eyelid-layer');
+
+    // Add slight per-lid offset so eyes don't blink in perfect sync
+    const lidOffsets = [0, 40, 0, 40];
+
+    function getRandom(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function closeLids() {
+      eyelids.forEach(lid => lid.classList.add('closed'));
+    }
+
+    function openLids() {
+      eyelids.forEach(lid => lid.classList.remove('closed'));
+    }
+
     function blink_loop() {
-      let openTime = Math.random() * 25000 + 2000;
-      let blinkTime = Math.random() * 300 + 250;
-      let flutter = 1;
-      
-      if (Math.random() > 0.95) {
-        flutter += Math.round(Math.random() * 2);
+      // Humans blink ~15-20 times per minute → every ~3-5 seconds on average
+      let openTime = getRandom(2500, 6000);
+      let blinkTime = getRandom(100, 250); // natural blink is fast
+
+      // Occasional long blink / squint (10% chance)
+      let isLongBlink = Math.random() < 0.10;
+      if (isLongBlink) {
+        blinkTime = getRandom(350, 700);
       }
-      
-      function blink(flutter) {
-        eyelids.forEach(lid => lid.classList.add('closed'));
-        setTimeout(() => {
-          eyelids.forEach(lid => lid.classList.remove('closed'));
-        }, blinkTime);
-        
-        if (flutter > 1) {
-          setTimeout(() => { blink(flutter - 1); }, blinkTime + 100);
+
+      // Occasional double blink (15% chance)
+      let isDoubleBlink = Math.random() < 0.15;
+
+      // Stagger lids slightly for a more organic look
+      eyelids.forEach((lid, i) => {
+        lid.style.transition = `transform ${blinkTime}ms ease`;
+      });
+
+      closeLids();
+
+      setTimeout(() => {
+        openLids();
+
+        if (isDoubleBlink) {
+          // Second quick blink after a short pause
+          setTimeout(() => {
+            closeLids();
+            setTimeout(() => {
+              openLids();
+              setTimeout(blink_loop, openTime);
+            }, blinkTime);
+          }, getRandom(150, 300));
         } else {
           setTimeout(blink_loop, openTime);
         }
-      }
-      blink(flutter);
+      }, blinkTime);
     }
+
     blink_loop();
   </script>
 
@@ -287,6 +1013,8 @@
     const mouth = document.getElementById('mouth');
 
     let currentAudio = null;
+    let mediaRecorder = null;
+    let micStream = null;
 
     function setTalking(isTalking) {
       if (isTalking) {
@@ -358,6 +1086,11 @@
       console.log("[WebSocket] Connected to Main Server at", SERVER_URL);
     });
 
+    socket.on("disconnect", () => {
+      console.log("[WebSocket] Disconnected from Main Server");
+      stopMicStream();
+    });
+
     socket.on("play_ack", () => {
       console.log("[WebSocket] Received play_ack signal");
       const randomIndex = Math.floor(Math.random() * ACK_SOUNDS.length);
@@ -393,6 +1126,50 @@
       const b64Data = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
       socket.emit("client_frame", { image: b64Data });
     });
+
+    // --- Microphone streaming to NUC ---
+    async function startMicStream() {
+      if (mediaRecorder) return; // already running
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(micStream, {
+          mimeType: 'audio/webm;codecs=opus',
+          audioBitsPerSecond: 64000
+        });
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0 && socket.connected) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64 = reader.result.split(',')[1];
+              socket.emit('client_audio', { audio: base64 });
+            };
+            reader.readAsDataURL(e.data);
+          }
+        };
+
+        mediaRecorder.onerror = (e) => {
+          console.error("[Mic] MediaRecorder error:", e);
+        };
+
+        mediaRecorder.start(200); // 200ms chunks
+        console.log("[Mic] Audio stream started");
+      } catch (err) {
+        console.error("[Mic] Error accessing microphone:", err);
+      }
+    }
+
+    function stopMicStream() {
+      if (mediaRecorder) {
+        try { mediaRecorder.stop(); } catch (e) {}
+        mediaRecorder = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+        micStream = null;
+      }
+      console.log("[Mic] Audio stream stopped");
+    }
   </script>
 </body>
 </html>

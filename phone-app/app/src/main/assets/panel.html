@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c10">
+<title>Loona — control panel</title>
+<style>
+  :root{
+    --bg:#0a0c10; --bg-2:#0e1116; --card:#12161d; --card-2:#171c24; --line:rgba(255,255,255,.07);
+    --line-2:rgba(255,255,255,.12); --text:#e9eef6; --dim:#8b95a7; --dimmer:#5f6a7d;
+    --cyan:#66e0ff; --violet:#a78bfa; --good:#4fe0a4; --bad:#ff6b6b; --warn:#ffc66d;
+    --r-lg:20px; --r-md:14px; --r-sm:10px;
+    --shadow:0 18px 50px rgba(0,0,0,.45);
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; padding:22px 18px 64px; color:var(--text);
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Helvetica Neue",Arial,sans-serif;
+    background:
+      radial-gradient(900px 520px at 12% -8%, rgba(102,224,255,.10), transparent 60%),
+      var(--bg);
+    background-attachment: scroll;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:900px; margin:0 auto; position:relative; z-index:1}
+
+  /* ── header ─────────────────────────────────────── */
+  header{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:20px}
+  .mark{
+    width:48px;height:48px;border-radius:16px;flex:none;position:relative;
+    background:linear-gradient(155deg,#1b2430,#0d1016);
+    border:1px solid var(--line-2);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+    display:grid;place-items:center;
+  }
+  .mark span{display:block;width:5px;height:11px;border-radius:3px;background:var(--cyan);
+    box-shadow:0 0 12px rgba(102,224,255,.75); position:absolute; top:19px}
+  .mark span:first-child{left:15px} .mark span:last-child{right:15px}
+  .titles h1{font-size:19px;line-height:1.15;margin:0;letter-spacing:.2px;font-weight:650}
+  .titles p{margin:3px 0 0;color:var(--dim);font-size:12.5px;font-family:var(--mono);letter-spacing:.02em}
+  .head-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .chip{
+    display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 13px;border-radius:999px;
+    background:rgba(255,255,255,.035);border:1px solid var(--line);color:var(--dim);
+    font-size:12.5px;letter-spacing:.02em;white-space:nowrap;
+  }
+  .chip b{color:var(--text);font-weight:600}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--bad);flex:none}
+  .dot.ok{background:var(--good);box-shadow:0 0 0 4px rgba(79,224,164,.13)}
+  .dot.warn{background:var(--warn);box-shadow:0 0 0 4px rgba(255,198,109,.12)}
+  #state-chip .dot{transition:background .25s ease}
+  #state-chip[data-state="listening"]{color:var(--cyan);border-color:rgba(102,224,255,.3)}
+  #state-chip[data-state="thinking"]{color:var(--violet);border-color:rgba(167,139,250,.32)}
+  #state-chip[data-state="speaking"]{color:var(--good);border-color:rgba(79,224,164,.3)}
+
+  /* ── layout ─────────────────────────────────────── */
+  .col{max-width:880px; margin:0 auto}
+  main{display:flex; flex-direction:column; gap:18px}
+  .card{
+    background:linear-gradient(180deg,var(--card),var(--bg-2));
+    border:1px solid var(--line); border-radius:var(--r-lg);
+    padding:20px 22px; position:relative;
+  }
+  .card h2{
+    margin:0 0 16px; font-size:13px; font-weight:650; letter-spacing:.05em;
+    color:var(--dim); display:flex; align-items:center; gap:9px;
+  }
+  .card h2:not(:first-child){margin-top:26px}
+  .divider{height:1px;background:var(--line);margin:22px -22px}
+  .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:0 13px}
+  .cols.two{grid-template-columns:1fr 1fr}
+  .switches{display:grid;grid-template-columns:1fr 1fr;column-gap:30px}
+  .sliders{display:grid;grid-template-columns:1fr 1fr;column-gap:30px}
+  .facts.two{grid-template-columns:1fr 1fr;column-gap:30px;row-gap:0}
+  .facts.two .fact{padding:7px 0;border-top:1px solid rgba(255,255,255,.05)}
+  .facts.two .fact:nth-child(1),.facts.two .fact:nth-child(2){border-top:none}
+  .card h2 svg{width:15px;height:15px;stroke:var(--dimmer);fill:none;stroke-width:1.7;flex:none}
+  .card h2 .aside{margin-left:auto; text-transform:none; letter-spacing:0; font-weight:500; font-size:11.5px; color:var(--dimmer)}
+
+  /* ── preview ────────────────────────────────────── */
+  .hero{display:flex; flex-direction:column; gap:14px}
+  .hero .quick{justify-content:flex-start}
+  .screen{
+    position:relative; border-radius:var(--r-md); overflow:hidden; background:#07090c;
+    border:1px solid var(--line-2); aspect-ratio:9/19; margin:0 auto; width:100%;
+  }
+  .screen img{width:100%;height:100%;object-fit:contain;display:block;opacity:0;transition:opacity .35s ease}
+  .screen img.on{opacity:1}
+  .screen .off{
+    position:absolute; inset:0; display:grid; place-content:center; gap:6px; text-align:center;
+    color:var(--dimmer); font-size:12.5px; background:
+      radial-gradient(circle at 50% 50%, rgba(102,224,255,.05), transparent 60%);
+  }
+  .badge-live{
+    position:absolute; top:10px; left:10px; display:inline-flex; align-items:center; gap:6px;
+    height:24px; padding:0 9px; border-radius:999px; font:600 10.5px/1 var(--mono); letter-spacing:.1em;
+    background:rgba(6,8,11,.82); border:1px solid rgba(255,255,255,.12); color:#dfe8f5;
+  }
+  .badge-live i{width:6px;height:6px;border-radius:50%;background:var(--bad);display:block}
+  .badge-live.on i{background:var(--good);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+  .quick{display:flex;flex-wrap:wrap;gap:8px}
+  .fab{
+    display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:10px;
+    background:rgba(255,255,255,.045); border:1px solid var(--line); color:var(--text);
+    font-size:12.5px;cursor:pointer;transition:background .15s ease,border-color .15s ease,transform .06s ease;
+  }
+  .fab:hover{background:rgba(255,255,255,.08);border-color:var(--line-2)}
+  .fab:active{transform:translateY(1px)}
+  .fab svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8}
+  .fab.accent{border-color:rgba(102,224,255,.35); color:#cdf4ff; background:rgba(102,224,255,.08)}
+
+  /* ── fields ─────────────────────────────────────── */
+  .field{margin-bottom:12px}
+  .field:last-child{margin-bottom:0}
+  .field > label{display:block;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dimmer);margin-bottom:6px}
+  input[type=text],input[type=password],input[type=url],select,textarea{
+    width:100%;height:40px;padding:0 12px;color:var(--text);font:inherit;font-size:13.5px;
+    background:var(--card-2);border:1px solid var(--line);border-radius:var(--r-sm);
+    transition:border-color .15s ease, box-shadow .15s ease;
+  }
+  textarea{height:auto;padding:10px 12px;font-family:var(--mono);font-size:12.5px;resize:vertical}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(102,224,255,.55);box-shadow:0 0 0 3px rgba(102,224,255,.14)}
+  select{appearance:none;background-image:
+    linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+    background-position:calc(100% - 18px) 17px,calc(100% - 13px) 17px;
+    background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .btn{
+    height:40px;padding:0 16px;border-radius:var(--r-sm);border:1px solid var(--line);
+    background:var(--card-2);color:var(--text);font:inherit;font-size:13.5px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:8px;
+    transition:background .15s ease,border-color .15s ease,transform .06s ease;
+  }
+  .btn:hover{background:#1c222c;border-color:var(--line-2)}
+  .btn:active{transform:translateY(1px)}
+  .btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8}
+  .btn.primary{
+    background:linear-gradient(150deg,rgba(102,224,255,.2),rgba(167,139,250,.2));
+    border-color:rgba(102,224,255,.4); color:#e6f9ff; font-weight:600;
+  }
+  .btn.primary:hover{background:linear-gradient(150deg,rgba(102,224,255,.28),rgba(167,139,250,.28))}
+  .btn.small{height:32px;padding:0 11px;font-size:12.5px;border-radius:9px}
+
+  /* ── switch ─────────────────────────────────────── */
+  .switch{display:flex;align-items:center;gap:12px;padding:10px 0;cursor:pointer;user-select:none}
+  .switches .switch{border-top:1px solid rgba(255,255,255,.05)}
+  .switches .switch:nth-child(1),.switches .switch:nth-child(2){border-top:none}
+  .switch input{position:absolute;opacity:0;width:0;height:0}
+  .track{
+    width:38px;height:22px;border-radius:999px;background:#232a34;border:1px solid var(--line);
+    position:relative;flex:none;transition:background .18s ease,border-color .18s ease;
+  }
+  .track::after{
+    content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+    background:#8f9bad;transition:transform .18s cubic-bezier(.4,.1,.2,1),background .18s ease;
+  }
+  .switch input:checked + .track{background:rgba(102,224,255,.28);border-color:rgba(102,224,255,.55)}
+  .switch input:checked + .track::after{transform:translateX(16px);background:var(--cyan)}
+  .switch input:focus-visible + .track{box-shadow:0 0 0 3px rgba(102,224,255,.25)}
+  .switch .txt{font-size:13.5px}
+  .switch .txt small{display:block;color:var(--dimmer);font-size:11.5px;line-height:1.35;margin-top:1px}
+
+  /* ── slider ─────────────────────────────────────── */
+  .slider{padding:10px 0}
+  .sliders .slider{border-top:1px solid rgba(255,255,255,.05)}
+  .sliders .slider:nth-child(1),.sliders .slider:nth-child(2){border-top:none}
+  .slider .head{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+  .slider .head span{font-size:13.5px}
+  .slider .head output{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--cyan)}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:22px;background:transparent;cursor:pointer;margin:0;
+  }
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:#242c37}
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:var(--cyan);
+    margin-top:-5.5px;box-shadow:0 0 0 4px rgba(102,224,255,.15),0 2px 6px rgba(0,0,0,.5);border:none;
+  }
+  input[type=range]:focus-visible{outline:none}
+  input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 5px rgba(102,224,255,.3)}
+
+  /* ── facts ──────────────────────────────────────── */
+  .facts{display:grid;gap:9px}
+  .cols + .facts{margin-top:16px}
+  .cols + .row{margin-top:14px}
+  .fact{display:flex;align-items:center;gap:10px;font-size:13px;min-height:20px}
+  .fact .k{color:var(--dim);flex:none}
+  .fact .v{margin-left:auto;text-align:right;font-family:var(--mono);font-size:12px;color:#cfd9e6;overflow-wrap:anywhere}
+  .fact .v.err{color:var(--bad)} .fact .v.ok{color:var(--good)}
+  .pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px;border-radius:999px;
+    background:rgba(255,255,255,.05);border:1px solid var(--line);font-size:11px;font-family:var(--mono);color:var(--dim)}
+  .pill.ok{color:var(--good);border-color:rgba(79,224,164,.35);background:rgba(79,224,164,.09)}
+  .pill.bad{color:var(--bad);border-color:rgba(255,107,107,.35);background:rgba(255,107,107,.09)}
+
+  /* ── permissions ────────────────────────────────── */
+  .perm{display:flex;align-items:center;gap:11px;padding:10px 0;border-top:1px solid rgba(255,255,255,.05)}
+  .perm:first-of-type{border-top:none;padding-top:2px}
+  .perm .name{font-size:13.5px}
+  .perm .note{font-size:11.5px;color:var(--dimmer);margin-top:1px}
+  .perm .act{margin-left:auto}
+
+  /* ── tools ──────────────────────────────────────── */
+  .tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:9px}
+  .tool{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
+    height:76px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--card-2);
+    color:var(--text);font-size:12px;cursor:pointer;transition:border-color .15s,background .15s,transform .06s;
+  }
+  .tool svg{width:19px;height:19px;stroke:var(--cyan);fill:none;stroke-width:1.7}
+  .tool:hover{border-color:rgba(102,224,255,.35);background:#1a212b}
+  .tool:active{transform:translateY(1px)}
+  .out{
+    margin-top:12px;background:#080a0e;border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:11px 12px;font-family:var(--mono);font-size:11.5px;color:#a9b7c8;max-height:170px;overflow:auto;
+    white-space:pre-wrap;word-break:break-word;
+  }
+  details summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:9px;
+    font-size:12.5px;letter-spacing:.04em;color:var(--dim);font-weight:650}
+  details summary::-webkit-details-marker{display:none}
+  details summary svg{width:15px;height:15px;stroke:var(--dimmer);fill:none;stroke-width:1.7}
+  details summary .caret{margin-left:auto;transition:transform .2s ease;stroke:var(--dimmer)}
+  details[open] summary .caret{transform:rotate(180deg)}
+  details[open] summary{margin-bottom:14px}
+
+  /* ── toast ──────────────────────────────────────── */
+  .toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:50;display:flex;flex-direction:column;gap:8px;align-items:center}
+  .toast{
+    display:flex;align-items:center;gap:9px;padding:10px 15px;border-radius:12px;font-size:13px;
+    background:rgba(16,20,26,.96);border:1px solid var(--line-2);box-shadow:0 12px 30px rgba(0,0,0,.5);
+    animation:rise .22s ease both;
+  }
+  .toast.bad{border-color:rgba(255,107,107,.4)} .toast.good{border-color:rgba(79,224,164,.4)}
+  @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  footer{margin:22px auto 0;text-align:center;color:var(--dimmer);font-size:11.5px;line-height:1.7}
+  footer code{font-family:var(--mono);color:var(--dim)}
+
+  @media (min-width:761px){
+    .screen{width:auto; height:min(62vh,480px); max-width:100%}
+  }
+  @media (max-width:760px){
+    .screen{max-height:min(60vh,460px)}
+    .cols, .cols.two, .switches, .sliders, .facts.two{grid-template-columns:1fr}
+    .switches .switch{border-top:1px solid rgba(255,255,255,.05)}
+    .switches .switch:nth-child(1){border-top:none}
+    .sliders .slider{border-top:1px solid rgba(255,255,255,.05)}
+    .sliders .slider:nth-child(1){border-top:none}
+    .facts.two .fact{border-top:1px solid rgba(255,255,255,.05)}
+    .facts.two .fact:nth-child(1),.facts.two .fact:nth-child(2){border-top:1px solid rgba(255,255,255,.05)}
+    .facts.two .fact:nth-child(1){border-top:none}
+    .card h2:not(:first-child){margin-top:24px}
+  }
+  @media (max-width:680px){
+    body{padding:16px 12px 52px}
+    .head-right{margin-left:0;width:100%}
+    .card{padding:16px 15px}
+    .divider{margin:20px -15px}
+    header{margin-bottom:16px}
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 8.5a16 16 0 0 1 18 0M6 12a11 11 0 0 1 12 0M9 15.4a6 6 0 0 1 6 0"/><circle cx="12" cy="19" r="1"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 12h2m2-4v8m4-12v16m4-12v8m4-4h2"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-11h-6l1-9Z"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="17" height="10" rx="2.5"/><path d="M22 10.5v3"/></symbol>
+    <symbol id="i-vol-up" viewBox="0 0 24 24"><path d="M4 9v6h3l5 4V5L7 9H4Z"/><path d="M16 8.5a5 5 0 0 1 0 7M19 6a9 9 0 0 1 0 12"/></symbol>
+    <symbol id="i-vol-down" viewBox="0 0 24 24"><path d="M4 9v6h3l5 4V5L7 9H4Z"/><path d="M16 8.5a5 5 0 0 1 0 7"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9v6h3l5 4V5L7 9H4Z"/><path d="m16 9 5 6m0-6-5 6"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4m0-14.2-1.4 1.4M6.3 17.7l-1.4 1.4"/></symbol>
+    <symbol id="i-vibrate" viewBox="0 0 24 24"><rect x="9" y="4" width="6" height="16" rx="2"/><path d="M5 8v8m14-8v8"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M4.2 7.5l1.9 1.1M17.9 15.4l1.9 1.1M4.2 16.5l1.9-1.1M17.9 8.6l1.9-1.1"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+    <symbol id="i-bt" viewBox="0 0 24 24"><path d="M9 6.5 15 17l-3 3V4l3 3-6 10.5"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><path d="M6 3h3l2 5-2.5 1.5a12 12 0 0 0 6 6L16 13l5 2v3a2 2 0 0 1-2.2 2A17 17 0 0 1 4 5.2 2 2 0 0 1 6 3Z"/></symbol>
+    <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M8 17h8l-1.5-2.5V10a4.5 4.5 0 0 0-9 0v1M4 4l16 16"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5-10-6.5Z"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 10 3 2-3 2M12.5 14H17"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4.2 3 7.4 7 9 4-1.6 7-4.8 7-9V6l-7-3Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M9.5 16.5h5"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <header>
+    <div class="mark"><span></span><span></span></div>
+    <div class="titles">
+      <h1>Loona</h1>
+      <p id="host">connecting…</p>
+    </div>
+    <div class="head-right">
+      <div class="chip" id="state-chip" data-state="idle"><span class="dot ok"></span><span id="state-text">idle</span></div>
+      <div class="chip"><span class="dot" id="link-dot"></span><span id="link-text">offline</span></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- 1 · live screen + quick actions -->
+    <section class="card hero">
+      <h2><svg><use href="#i-monitor"/></svg>Οθόνη<span class="aside" id="batt-aside">—</span></h2>
+      <div class="screen">
+        <img id="preview" alt="Loona's screen">
+        <div class="off" id="preview-off">waiting for a frame…</div>
+        <div class="badge-live" id="live-badge"><i></i>LIVE</div>
+      </div>
+      <div class="quick">
+        <button class="fab accent" data-call="speak" data-payload='{"text":"Γεια σου, είμαι η Λούνα."}'><svg><use href="#i-play"/></svg>Speak</button>
+        <button class="fab" data-call="torch" data-payload='{"on":true}'><svg><use href="#i-bolt"/></svg>Torch</button>
+        <button class="fab" data-call="torch" data-payload='{"on":false}'><svg><use href="#i-bolt"/></svg>Off</button>
+        <button class="fab" data-call="battery" data-payload='{}'><svg><use href="#i-battery"/></svg>Battery</button>
+      </div>
+    </section>
+
+    <!-- 2 · assistant + voice -->
+    <section class="card">
+      <h2><svg><use href="#i-bot"/></svg>Hermes<span class="aside" id="hermes-pill"></span></h2>
+      <div class="cols">
+        <div class="field">
+          <label for="hermes-url">Server</label>
+          <input id="hermes-url" type="url" spellcheck="false" placeholder="https://hermes.example.com:8642">
+        </div>
+        <div class="field">
+          <label for="hermes-key">API key</label>
+          <input id="hermes-key" type="password" spellcheck="false" autocomplete="off" placeholder="Bearer key">
+        </div>
+        <div class="field">
+          <label for="hermes-model">Model</label>
+          <input id="hermes-model" type="text" spellcheck="false" placeholder="hermes-agent">
+        </div>
+        <div class="field">
+          <label for="hermes-path">Fast path</label>
+          <input id="hermes-path" type="text" spellcheck="false" placeholder="/p/loona-fast/">
+        </div>
+        <div class="field">
+          <label for="hermes-key-fast">Fast key</label>
+          <input id="hermes-key-fast" type="password" spellcheck="false" autocomplete="off" placeholder="Bearer key">
+        </div>
+        <div class="field">
+          <label for="hermes-model-fast">Fast model</label>
+          <input id="hermes-model-fast" type="text" spellcheck="false" placeholder="hermes-agent">
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="hermes-save"><svg><use href="#i-shield"/></svg>Save</button>
+        <button class="btn small" id="hermes-test">Test connection</button>
+      </div>
+
+      <div class="divider"></div>
+
+      <h2><svg><use href="#i-wave"/></svg>Φωνή</h2>
+      <div class="cols">
+        <div class="field">
+          <label for="lang">Γλώσσα</label>
+          <select id="lang">
+            <option value="el-GR">Ελληνικά</option>
+            <option value="en-US">English</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="stt">Αναγνώριση</label>
+          <select id="stt">
+            <option value="whisper">Whisper · accurate</option>
+            <option value="google">Google · fast</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="whisper">Whisper server</label>
+          <input id="whisper" type="url" spellcheck="false" placeholder="https://whisper.example.com:10300">
+        </div>
+      </div>
+      <div class="facts">
+        <div class="fact"><span class="k">TTS engine</span><span class="v" id="tts-engine">—</span></div>
+        <div class="fact"><span class="k">Greek voice</span><span class="v" id="tts-greek">—</span></div>
+        <div class="fact"><span class="k">Whisper</span><span class="v" id="whisper-state">—</span></div>
+      </div>
+    </section>
+
+    <!-- 3 · behaviour -->
+    <section class="card">
+      <h2><svg><use href="#i-sliders"/></svg>Ρυθμίσεις<span class="aside" id="save-hint"></span></h2>
+      <div class="switches">
+        <label class="switch">
+          <input type="checkbox" id="set-wake"><span class="track"></span>
+          <span class="txt">Wake word<small>Off means she sleeps and the mic is closed</small></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="set-chime"><span class="track"></span>
+          <span class="txt">Chime on wake<small>A short sound when she hears her name</small></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="set-clock"><span class="track"></span>
+          <span class="txt">Clock on screen<small>Small time chip in the corner</small></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="set-keep"><span class="track"></span>
+          <span class="txt">Keep screen awake<small>The display never sleeps while she is on</small></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="set-kiosk"><span class="track"></span>
+          <span class="txt">Kiosk mode<small>Hide system bars, back button does nothing</small></span>
+        </label>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="sliders">
+        <div class="slider">
+          <div class="head"><span>Speech rate</span><output id="rate-out">1.05</output></div>
+          <input type="range" id="rate" min="0.6" max="1.6" step="0.05" value="1.05">
+        </div>
+        <div class="slider">
+          <div class="head"><span>Pitch</span><output id="pitch-out">1.00</output></div>
+          <input type="range" id="pitch" min="0.6" max="1.6" step="0.05" value="1">
+        </div>
+        <div class="slider">
+          <div class="head"><span>Face size</span><output id="face-out">1.00×</output></div>
+          <input type="range" id="face" min="0.7" max="1.5" step="0.05" value="1">
+        </div>
+        <div class="slider">
+          <div class="head"><span>Listening window</span><output id="timeout-out">12s</output></div>
+          <input type="range" id="timeout" min="4" max="30" step="1" value="12">
+        </div>
+        <div class="slider">
+          <div class="head"><span>Dim after</span><output id="dimMin-out">off</output></div>
+          <input type="range" id="dimMin" min="0" max="30" step="1" value="0">
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 · permissions + tools -->
+    <section class="card">
+      <h2><svg><use href="#i-shield"/></svg>Άδειες</h2>
+      <div id="perms"></div>
+      <p style="margin:14px 0 0;color:var(--dimmer);font-size:11.5px">
+        Loona lives on the phone — these buttons open the matching Android screen there.
+      </p>
+
+      <div class="divider"></div>
+
+      <h2><svg><use href="#i-grid"/></svg>Εργαλεία<span class="aside">everything she can do</span></h2>
+      <div class="tools">
+        <button class="tool" data-call="torch" data-payload='{"on":true}'><svg><use href="#i-bolt"/></svg>Torch on</button>
+        <button class="tool" data-call="torch" data-payload='{"on":false}'><svg><use href="#i-bolt"/></svg>Torch off</button>
+        <button class="tool" data-call="battery" data-payload='{}'><svg><use href="#i-battery"/></svg>Battery</button>
+        <button class="tool" data-call="volume" data-payload='{"op":"up"}'><svg><use href="#i-vol-up"/></svg>Volume +</button>
+        <button class="tool" data-call="volume" data-payload='{"op":"down"}'><svg><use href="#i-vol-down"/></svg>Volume −</button>
+        <button class="tool" data-call="volume" data-payload='{"op":"mute"}'><svg><use href="#i-mute"/></svg>Mute</button>
+        <button class="tool" data-call="brightness" data-payload='{"value":0.5}'><svg><use href="#i-sun"/></svg>Brightness</button>
+        <button class="tool" data-call="vibrate" data-payload='{"ms":120}'><svg><use href="#i-vibrate"/></svg>Vibrate</button>
+        <button class="tool" data-call="settings" data-payload='{"panel":"tts"}'><svg><use href="#i-gear"/></svg>TTS settings</button>
+        <button class="tool" data-call="settings" data-payload='{"panel":"voiceinput"}'><svg><use href="#i-mic"/></svg>Voice input</button>
+        <button class="tool" data-call="settings" data-payload='{"panel":"wifi"}'><svg><use href="#i-wifi"/></svg>Wi-Fi</button>
+        <button class="tool" data-call="settings" data-payload='{"panel":"bluetooth"}'><svg><use href="#i-bt"/></svg>Bluetooth</button>
+        <button class="tool" data-call="apps" data-payload='{}'><svg><use href="#i-grid"/></svg>Apps</button>
+        <button class="tool" data-call="callLog" data-payload='{}'><svg><use href="#i-phone"/></svg>Call log</button>
+        <button class="tool" data-call="cancel" data-payload='{"kind":"all"}'><svg><use href="#i-bell-off"/></svg>Cancel alerts</button>
+        <button class="tool" data-call="status" data-payload='{}'><svg><use href="#i-activity"/></svg>Status</button>
+      </div>
+      <div class="out" id="tool-out">Pick a tool — the phone does it and the answer lands here.</div>
+    </section>
+
+    <!-- 5 · device + manual -->
+    <section class="card">
+      <h2><svg><use href="#i-bot"/></svg>Συσκευή</h2>
+      <div class="facts two">
+        <div class="fact"><span class="k">Name</span><span class="v" id="d-name">—</span></div>
+        <div class="fact"><span class="k">Android</span><span class="v" id="d-android">—</span></div>
+        <div class="fact"><span class="k">Address</span><span class="v" id="d-addr">—</span></div>
+        <div class="fact"><span class="k">Battery</span><span class="v" id="d-batt">—</span></div>
+        <div class="fact"><span class="k">Wake loop</span><span class="v" id="d-loop">—</span></div>
+        <div class="fact"><span class="k">Panel</span><span class="v" id="d-panel">—</span></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <details>
+        <summary><svg><use href="#i-terminal"/></svg>Χειροκίνητο — run any bridge method
+          <svg class="caret"><use href="#i-chevron"/></svg>
+        </summary>
+        <div class="cols two">
+          <div class="field">
+            <label for="method">Method</label>
+            <input id="method" type="text" value="battery" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="payload">Payload (JSON)</label>
+            <textarea id="payload" rows="1">{}</textarea>
+          </div>
+        </div>
+        <button class="btn primary" id="run"><svg><use href="#i-terminal"/></svg>Run</button>
+        <div class="out" id="method-out">—</div>
+      </details>
+    </section>
+    <!-- 6 · access + commands -->
+    <section class="card">
+      <h2><svg><use href="#i-shield"/></svg>Πρόσβαση<span class="aside" id="access-state"></span></h2>
+      <div class="facts two">
+        <div class="fact"><span class="k">Token</span><span class="v" id="access-token">—</span></div>
+        <div class="fact"><span class="k">Protection</span><span class="v" id="access-enabled">—</span></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn small" id="access-copy">Copy link</button>
+        <button class="btn small" id="access-enable">Enable protection</button>
+        <button class="btn small" id="access-disable">Disable</button>
+        <button class="btn small" id="access-regen">Regenerate</button>
+      </div>
+      <div class="divider"></div>
+      <h2><svg><use href="#i-terminal"/></svg>Εντολή</h2>
+      <div class="row">
+        <input id="cmd-text" type="text" placeholder="π.χ. άνοιξε το spotify / open youtube" style="flex:1">
+        <button class="btn primary small" id="cmd-send">Στείλε</button>
+        <button class="btn small" id="cmd-mic">🎤</button>
+      </div>
+      <div class="out" id="cmd-out">—</div>
+      <div class="divider"></div>
+      <h2><svg><use href="#i-monitor"/></svg>Συνδεδεμένες συσκευές</h2>
+      <div id="clients" class="facts"></div>
+    </section>
+  </main>
+
+  <footer>
+    Served by the phone itself · optional token protection · keep it on your own Wi-Fi<br>
+    <code id="foot-url">—</code>
+  </footer>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var state = null;
+  var typingTimer = null;
+  var saveTimer = null;
+
+  /* ── tiny helpers ─────────────────────────────── */
+
+  async function api(path, body) {
+    var opts = { cache: 'no-store' };
+    if (body) {
+      opts.method = 'POST';
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    var r = await fetch(path, opts);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+
+  function toast(text, kind) {
+    var el = document.createElement('div');
+    el.className = 'toast ' + (kind || '');
+    el.textContent = text;
+    $('toasts').appendChild(el);
+    setTimeout(function () {
+      el.style.transition = 'opacity .25s ease';
+      el.style.opacity = '0';
+      setTimeout(function () { el.remove(); }, 260);
+    }, 2600);
+  }
+
+  function setText(id, text, cls) {
+    var el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'v' + (cls ? ' ' + cls : '');
+  }
+
+  function typing() {
+    var a = document.activeElement;
+    return !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA');
+  }
+
+  /* ── render ───────────────────────────────────── */
+
+  function paintState(s) {
+    var chip = $('state-chip');
+    var st = (s && s.state) || 'idle';
+    chip.dataset.state = st;
+    $('state-text').textContent = st;
+    var dot = chip.querySelector('.dot');
+    dot.className = 'dot ' + (st === 'idle' ? 'ok' : 'warn');
+  }
+
+  function paint(s) {
+    state = s;
+
+    if (s.offline) {
+      $('link-dot').className = 'dot warn';
+      $('link-text').textContent = 'Loona in background';
+      $('preview-off').textContent = 'Loona is in the background — open the app to see her screen';
+    } else {
+      $('link-dot').className = 'dot ok';
+      $('link-text').textContent = 'online';
+    }
+    $('host').textContent = s.device.ip + ':' + s.device.port;
+    $('foot-url').textContent = s.device.panel;
+    paintState(s.runtime);
+
+    // hermes
+    if (!typing()) {
+      $('hermes-url').value = s.hermes.url || '';
+      $('hermes-key').value = s.hermes.key || '';
+      $('hermes-model').value = s.hermes.model || '';
+      $('hermes-path').value = s.hermes.pathPrefix || '';
+      $('hermes-key-fast').value = s.hermes.keyFast || '';
+      $('hermes-model-fast').value = s.hermes.modelFast || '';
+    }
+    var hp = $('hermes-pill');
+    if (s.hermes.reachable) {
+      hp.className = 'aside pill ok';
+      hp.textContent = (s.hermes.models || '').replace(/[\[\]"]/g, '').split(',')[0] || 'connected';
+    } else {
+      hp.className = 'aside pill bad';
+      hp.textContent = 'offline';
+    }
+
+    // voice
+    if (!typing()) {
+      $('lang').value = s.voice.lang || 'el-GR';
+      $('stt').value = s.voice.stt === 'google' ? 'google' : 'whisper';
+      $('whisper').value = s.voice.whisper || '';
+    }
+    $('tts-engine').textContent = (s.voice.ttsEngine || 'starting').replace('com.google.android.tts', 'Google');
+    $('tts-greek').textContent = s.voice.greekTts ? 'available' : 'missing';
+    $('tts-greek').className = 'v ' + (s.voice.greekTts ? 'ok' : 'err');
+    $('whisper-state').textContent = s.voice.whisperOn
+      ? (s.voice.whisperReachable ? 'reachable' : 'unreachable')
+      : 'off';
+    $('whisper-state').className = 'v ' + (s.voice.whisperReachable ? 'ok' : (s.voice.whisperOn ? 'err' : ''));
+
+    // device
+    $('d-name').textContent = s.device.manufacturer + ' ' + s.device.model;
+    $('d-android').textContent = s.device.android + ' · SDK ' + s.device.sdk;
+    $('d-addr').textContent = s.device.ip + ':' + s.device.port;
+    $('d-batt').textContent = (s.battery.percent >= 0 ? s.battery.percent + '%' : '—') +
+      (s.battery.charging ? ' ⚡' : '');
+    $('d-loop').textContent = s.runtime.loop ? 'armed' : 'off';
+    $('d-panel').textContent = s.device.panel;
+    $('batt-aside').textContent = (s.battery.percent >= 0 ? s.battery.percent + '%' : '') +
+      (s.battery.charging ? ' ⚡ charging' : '');
+
+    // settings (don't fight the user's thumb)
+    var u = s.ui || {};
+    if (!typing()) {
+      $('set-wake').checked = u.wake !== false;
+      $('set-chime').checked = u.chime !== false;
+      $('set-clock').checked = u.clock !== false;
+      $('set-keep').checked = u.keepAwake !== false;
+      $('set-kiosk').checked = u.kiosk !== false;
+      setRange('rate', u.rate || 1, 2, '');
+      setRange('pitch', u.pitch || 1, 2, '');
+      setRange('face', u.face || 1, 2, 'x');
+      setRange('timeout', u.timeout || 12, 0, 's');
+      setRange('dimMin', u.dimMin || 0, 0, 'min');
+    }
+
+    paintPerms(s.permissions);
+  }
+
+  var permsKey = '';
+  function paintPerms(p) {
+    if (!p) return;
+    var key = JSON.stringify(p);
+    if (key === permsKey) return;
+    permsKey = key;
+    var rows = [
+      { name: 'Microphone', note: 'wake word and commands', ok: p.mic, panel: null },
+      { name: 'Camera', note: 'gaze and face tracking', ok: p.camera, panel: null },
+      { name: 'Notifications', note: 'reminders and alarms', ok: p.notifications, panel: 'apps' },
+      { name: 'Exact alarms', note: 'timers fire on time', ok: p.exactAlarms, panel: 'apps' },
+      { name: 'Modify system settings', note: 'brightness control', ok: p.writeSettings, panel: 'settings' },
+      { name: 'Draw over apps', note: 'overlay cards', ok: p.overlay, panel: 'settings' }
+    ];
+    var html = '';
+    rows.forEach(function (r) {
+      html += '<div class="perm">' +
+        '<span class="dot ' + (r.ok ? 'ok' : '') + '"></span>' +
+        '<div><div class="name">' + r.name + '</div><div class="note">' + r.note + '</div></div>' +
+        (r.ok ? '<span class="act pill ok">granted</span>'
+              : '<button class="btn small act" data-fix="' + (r.panel || '') + '">Open</button>') +
+        '</div>';
+    });
+    $('perms').innerHTML = html;
+  }
+
+  function setRange(id, value, decimals, suffix) {
+    var el = $(id);
+    var out = $(id + '-out');
+    if (!el || !out) return;
+    el.value = value;
+    out.textContent = fmt(value, decimals, suffix, id);
+  }
+
+  function fmt(v, decimals, suffix, id) {
+    var n = Number(v);
+    if (id === 'dimMin' && n === 0) return 'off';
+    var s = n.toFixed(decimals || 0);
+    if (suffix === 'x') return s + '×';
+    if (suffix === 's') return s + 's';
+    if (suffix === 'min') return s + ' min';
+    return decimals ? s : s;
+  }
+
+  /* ── live preview ─────────────────────────────── */
+
+  var previewBusy = false;
+  var frameFails = 0;
+  function previewTick() {    var img = $('preview');
+    if (document.hidden || previewBusy) return;
+    if (state && state.offline) { previewBusy = false; return; }
+    previewBusy = true;
+    var next = new Image();
+    next.onload = function () {
+      img.src = next.src;
+      img.classList.add('on');
+      // Match the frame's own shape — the phone screen is portrait, so the box
+      // should be too, not a wide letterboxed rectangle.
+      var ratio = next.naturalWidth / next.naturalHeight;
+      if (ratio && isFinite(ratio)) {
+        img.parentNode.style.aspectRatio = String(Math.max(0.4, Math.min(1.6, ratio)));
+      }
+      $('preview-off').style.display = 'none';
+      $('live-badge').classList.add('on');
+      previewBusy = false;
+    };
+    next.onerror = function () {
+      // A skipped frame (server busy) is normal — keep showing the last one.
+      frameFails++;
+      if (frameFails > 2) {
+        $('live-badge').classList.remove('on');
+        $('preview-off').style.display = 'grid';
+        $('preview-off').textContent = 'waiting for a frame…';
+      }
+      previewBusy = false;
+    };
+    next.src = '/api/frame.jpg?t=' + Date.now();
+  }
+  // 1.2 s is smooth enough and leaves the server free for settings calls.
+  setInterval(previewTick, 1200);
+
+  /* ── polling ──────────────────────────────────── */
+
+  async function refresh() {
+    try {
+      paint(await api('/api/state'));
+    } catch (e) {
+      $('link-dot').className = 'dot';
+      $('link-text').textContent = 'offline';
+    }
+  }
+  refresh();
+  setInterval(refresh, 4000);
+
+  /* ── hermes ───────────────────────────────────── */
+
+  $('hermes-save').addEventListener('click', async function () {
+    var cfg = {
+      url: $('hermes-url').value.trim(),
+      key: $('hermes-key').value.trim(),
+      model: $('hermes-model').value.trim(),
+      pathPrefix: $('hermes-path').value.trim(),
+      keyFast: $('hermes-key-fast').value.trim(),
+      modelFast: $('hermes-model-fast').value.trim()
+    };
+    try {
+      await api('/api/config', { hermes: cfg });
+      toast('Hermes settings saved', 'good');
+      refresh();
+    } catch (e) {
+      toast('Could not save: ' + e.message, 'bad');
+    }
+  });
+
+  $('hermes-test').addEventListener('click', async function () {
+    toast('Testing Hermes…');
+    try {
+      var r = await api('/api/test', { target: 'hermes' });
+      toast(r.ok ? 'Hermes answers: ' + (r.models || '').replace(/[\[\]"]/g, '') : 'No answer from ' + r.url,
+        r.ok ? 'good' : 'bad');
+    } catch (e) {
+      toast('Test failed: ' + e.message, 'bad');
+    }
+  });
+
+  /* ── voice ────────────────────────────────────── */
+
+  function pushVoice() {
+    var v = {
+      lang: $('lang').value,
+      stt: $('stt').value,
+      whisper: $('whisper').value.trim(),
+      whisperOn: !!$('whisper').value.trim()
+    };
+    api('/api/config', { voice: v }).then(function () {
+      toast('Voice updated', 'good');
+    }).catch(function (e) { toast('Voice update failed: ' + e.message, 'bad'); });
+  }
+  ['lang', 'stt'].forEach(function (id) { $(id).addEventListener('change', pushVoice); });
+  $('whisper').addEventListener('change', pushVoice);
+
+  /* ── settings (auto-save, debounced) ──────────── */
+
+  function uiFromDom() {
+    return {
+      wake: $('set-wake').checked,
+      chime: $('set-chime').checked,
+      clock: $('set-clock').checked,
+      keepAwake: $('set-keep').checked,
+      kiosk: $('set-kiosk').checked,
+      rate: parseFloat($('rate').value),
+      pitch: parseFloat($('pitch').value),
+      face: parseFloat($('face').value),
+      timeout: parseInt($('timeout').value, 10),
+      dimMin: parseInt($('dimMin').value, 10)
+    };
+  }
+
+  function pushUi() {
+    $('save-hint').textContent = 'saving…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async function () {
+      try {
+        await api('/api/config', { ui: uiFromDom() });
+        $('save-hint').textContent = 'saved';
+        setTimeout(function () { $('save-hint').textContent = ''; }, 1400);
+      } catch (e) {
+        $('save-hint').textContent = 'failed';
+        toast('Settings failed: ' + e.message, 'bad');
+      }
+    }, 320);
+  }
+
+  ['set-wake', 'set-chime', 'set-clock', 'set-keep', 'set-kiosk'].forEach(function (id) {
+    $(id).addEventListener('change', pushUi);
+  });
+
+  [['rate', 2, ''], ['pitch', 2, ''], ['face', 2, 'x'], ['timeout', 0, 's'], ['dimMin', 0, 'min']]
+    .forEach(function (spec) {
+      var id = spec[0];
+      $(id).addEventListener('input', function () {
+        $(id + '-out').textContent = fmt($(id).value, spec[1], spec[2], id);
+      });
+      $(id).addEventListener('change', pushUi);
+    });
+
+  /* ── tools ────────────────────────────────────── */
+
+  document.addEventListener('click', async function (ev) {
+    var fix = ev.target.closest('button[data-fix]');
+    if (fix) {
+      try {
+        await api('/api/call', { method: 'settings', payload: { panel: fix.dataset.fix || 'settings' } });
+        toast('Opened settings on the phone');
+      } catch (e) { toast('Could not open settings', 'bad'); }
+      return;
+    }
+    var btn = ev.target.closest('button[data-call]');
+    if (!btn) return;
+    var payload = {};
+    try { payload = JSON.parse(btn.dataset.payload || '{}'); } catch (e) {}
+    var name = btn.textContent.trim();
+    $('tool-out').textContent = name + ' …';
+    try {
+      var r = await api('/api/call', { method: btn.dataset.call, payload: payload });
+      $('tool-out').textContent = JSON.stringify(r, null, 2);
+      if (!r.ok) toast(name + ' failed', 'bad');
+    } catch (e) {
+      $('tool-out').textContent = 'error: ' + e.message;
+      toast(name + ' failed: ' + e.message, 'bad');
+    }
+    refresh();
+  });
+
+  $('run').addEventListener('click', async function () {
+    var payload = {};
+    try { payload = JSON.parse($('payload').value || '{}'); } catch (e) {
+      $('method-out').textContent = 'payload is not valid JSON';
+      return;
+    }
+    $('method-out').textContent = 'running…';
+    try {
+      var r = await api('/api/call', { method: $('method').value.trim(), payload: payload });
+      $('method-out').textContent = JSON.stringify(r, null, 2);
+    } catch (e) {
+      $('method-out').textContent = 'error: ' + e.message;
+    }
+  });
+
+  /* ── access + commands ────────────────────────── */
+  function renderAccess(s) {
+    var a = (s && s.access) || {};
+    var tok = a.token || '';
+    $('access-token').textContent = tok ? tok : '(open — no token)';
+    $('access-enabled').textContent = tok ? 'enabled' : 'disabled';
+    $('access-enabled').className = 'v ' + (tok ? 'ok' : '');
+    $('access-state').textContent = tok ? 'protected' : 'open';
+    $('access-state').className = 'aside pill ' + (tok ? 'ok' : 'bad');
+    var clients = a.clients || [];
+    var html = '';
+    clients.forEach(function (c) {
+      html += '<div class="fact"><span class="k">' + c.ip + '</span>' +
+        '<span class="v">' + new Date(c.last).toLocaleTimeString() +
+        ' <button class="btn small" data-block="' + c.ip + '">block</button></span></div>';
+    });
+    if (!clients.length) html = '<div class="fact"><span class="k">none</span><span class="v">—</span></div>';
+    $('clients').innerHTML = html;
+  }
+  // hook into paint
+  var _origPaint = paint;
+  paint = function (s) { _origPaint(s); renderAccess(s); };
+
+  function newToken() {
+    var arr = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(arr);
+    return Array.from(arr).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  }
+  $('access-enable').addEventListener('click', async function () {
+    try { await api('/api/config', { access: { token: newToken() } }); toast('Protection enabled', 'good'); refresh(); }
+    catch (e) { toast('Failed: ' + e.message, 'bad'); }
+  });
+  $('access-disable').addEventListener('click', async function () {
+    try { await api('/api/config', { access: { token: '' } }); toast('Protection disabled', 'good'); refresh(); }
+    catch (e) { toast('Failed: ' + e.message, 'bad'); }
+  });
+  $('access-regen').addEventListener('click', async function () {
+    try { await api('/api/config', { access: { token: newToken() } }); toast('Token regenerated', 'good'); refresh(); }
+    catch (e) { toast('Failed: ' + e.message, 'bad'); }
+  });
+  $('access-copy').addEventListener('click', function () {
+    var tok = ($('access-token').textContent || '').trim();
+    if (!tok || tok.indexOf('open') === 0) { toast('Enable protection first', 'bad'); return; }
+    var url = location.origin + location.pathname + '?t=' + encodeURIComponent(tok);
+    if (navigator.clipboard) navigator.clipboard.writeText(url).then(function () { toast('Link copied', 'good'); });
+    else toast(url, 'good');
+  });
+  document.addEventListener('click', async function (ev) {
+    var b = ev.target.closest('button[data-block]');
+    if (!b) return;
+    try { await api('/api/config', { access: { block: b.dataset.block } }); toast('Blocked ' + b.dataset.block, 'good'); refresh(); }
+    catch (e) { toast('Failed: ' + e.message, 'bad'); }
+  });
+
+  $('cmd-send').addEventListener('click', async function () {
+    var t = $('cmd-text').value.trim();
+    if (!t) return;
+    $('cmd-out').textContent = 'running…';
+    try {
+      var r = await api('/api/call', { method: 'command', payload: { text: t } });
+      $('cmd-out').textContent = JSON.stringify(r, null, 2);
+    } catch (e) { $('cmd-out').textContent = 'error: ' + e.message; }
+  });
+  $('cmd-text').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('cmd-send').click(); });
+  $('cmd-mic').addEventListener('click', function () {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { toast('Speech not supported in this browser', 'bad'); return; }
+    var r = new SR();
+    r.lang = 'el-GR'; r.interimResults = false; r.maxAlternatives = 1;
+    r.onresult = function (ev) { $('cmd-text').value = ev.results[0][0].transcript; $('cmd-send').click(); };
+    r.onerror = function (ev) { toast('Mic error: ' + ev.error, 'bad'); };
+    r.start();
+    toast('Listening…');
+  });
+
+  previewTick();
+})();
+</script>
+</body>
+</html>

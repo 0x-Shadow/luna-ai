@@ -1,0 +1,24 @@
+# Built application files
+*.apk
+*.aab
+
+# Gradle
+.gradle/
+build/
+*/build/
+
+# Local config / generated files
+local.properties
+*.iml
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal planning artifacts (contain internal network info)
+.superpowers/
+docs/superpowers/
+
+# Phone app Termux local config
+phone/serv-acc.json

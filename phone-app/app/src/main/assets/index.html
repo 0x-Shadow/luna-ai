@@ -1,0 +1,2517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <title>PAL9000 Client</title>
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="wake.js"></script>
+    <script src="brain.js"></script>
+  <style>
+    :root {
+      --bg: #000000;
+      --ink: #ffffff;       /* hand-drawn strokes are white on black now */
+      --paper: #000000;
+      --accent: #7ad3ff;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #000000;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      cursor: crosshair;
+    }
+
+    video { display: none; }
+
+    /* ── Head shell ───────────────────────────────────────────── */
+    .robot-head {
+      width: min(86vw, 440px);
+      height: calc(min(86vw, 440px) * 0.625); /* 8:5, same as the SVG viewBox */
+      background: #000000;
+      border: none;                          /* no white ring: pure black look */
+      border-radius: 9999px;
+      position: relative;
+      box-shadow: 0 26px 60px rgba(0, 0, 0, 0.65);
+      overflow: hidden;
+      animation: breathe 5.2s ease-in-out infinite;
+      z-index: 2;
+    }
+
+    /* Sleeping "zZ" drifts up out of the head */
+    #zz {
+      position: absolute;
+      top: 12%;
+      right: 14%;
+      color: #fff;
+      font-family: cursive;
+      font-size: 24px;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 4;
+    }
+    body.state-sleeping #zz { animation: zfloat 3.4s ease-out infinite; }
+    body.state-sleeping #zz::after {
+      content: 'z';
+      position: absolute;
+      left: 14px; top: 12px;
+      font-size: 16px;
+      animation: zfloat 3.4s ease-out 1.7s infinite;
+    }
+    @keyframes zfloat {
+      0%   { opacity: 0; transform: translate(0, 0) scale(0.7); }
+      18%  { opacity: 0.95; }
+      100% { opacity: 0; transform: translate(22px, -44px) scale(1.15); }
+    }
+
+    @keyframes breathe {
+      0%, 100% { transform: translateY(0) scale(1); }
+      50%      { transform: translateY(-5px) scale(1.012); }
+    }
+
+    /* Slow, deep breathing while asleep */
+    body.state-sleeping .robot-head { animation-duration: 8.5s; }
+
+    .robot-head.shake { animation: shake 0.55s cubic-bezier(.36, .07, .19, .97) both; }
+    @keyframes shake {
+      10%, 90% { transform: translate3d(-2px, 0, 0) rotate(-1deg); }
+      20%, 80% { transform: translate3d(4px, 0, 0) rotate(1deg); }
+      30%, 50%, 70% { transform: translate3d(-5px, 0, 0) rotate(-1.5deg); }
+      40%, 60% { transform: translate3d(5px, 0, 0) rotate(1.5deg); }
+    }
+
+    /* Inner layer: head tilt / slump lives here so it never fights the breathing transform */
+    .face-layer {
+      position: absolute;
+      inset: 0;
+      transition: transform 0.55s cubic-bezier(0.34, 1.3, 0.64, 1);
+      transform-origin: 50% 85%;
+    }
+
+    /* ── Face states: stacked SVGs crossfaded by .active ─────────── */
+    .eye-tracker {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    svg.face-state,
+    svg.face-mouth {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      transform: scale(0.96);
+      transition: opacity 0.1s ease-out, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+      stroke: var(--ink);
+      stroke-width: 15px;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    svg.face-state.active {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    /* The mouth is toggled by JS (opacity), never scaled — keep it full size */
+    svg.face-mouth { transform: scale(1); }
+
+    /* Boil: every stroke inside the active face gets a tiny per-frame jitter
+       (set by JS) so lines wobble like hand-drawn animation */
+    .face-state > * { will-change: transform; }
+
+    /* Solid white shapes */
+    .fill-black { fill: var(--ink); stroke: none; }
+
+    /* ── Voice level indicator ────────────────────────────────── */
+    .audio-meter {
+      position: fixed;
+      top: 40px;
+      left: 18px;
+      width: 128px;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 4px;
+      overflow: hidden;
+      z-index: 90;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    .audio-meter.active { opacity: 0.9; }
+    .audio-meter-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #3ec9ff, #6affc8);
+      width: 0%;
+      border-radius: 4px;
+      transition: width 0.06s linear;
+    }
+
+    /* ── Status line ──────────────────────────────────────────── */
+    #wake-status {
+      position: fixed;
+      top: 16px;
+      left: 18px;
+      color: rgba(180, 225, 255, 0.75);
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      z-index: 101;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+      white-space: nowrap;
+    }
+    #wake-status.visible { opacity: 1; }
+
+    /* Clock chip: bottom right, on by default, switchable in settings */
+    #clock-chip {
+      position: fixed;
+      right: 16px;
+      top: 14px;
+      font: 600 15px/1 ui-monospace, 'SF Mono', Menlo, monospace;
+      letter-spacing: 1px;
+      color: rgba(200, 235, 255, 0.7);
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      pointer-events: none;
+      z-index: 30;
+    }
+    #clock-chip.on { opacity: 1; }
+
+    #status-banner {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: rgba(0, 0, 0, 0.82);
+      color: #fff;
+      padding: 12px;
+      text-align: center;
+      z-index: 100;
+      cursor: pointer;
+      display: none;
+      font-size: 14px;
+    }
+
+    /* ── Conversation text: one stack in the bottom-left corner ──────
+       Everything lives in a single flex column so the reasoning, the
+       transcript and the answer can never land on top of each other. */
+    #captions {
+      position: fixed;
+      left: 18px;
+      bottom: 20px;
+      width: min(78vw, 520px);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+      z-index: 99;
+      pointer-events: none;
+    }
+    #thinking, #transcript, #reply {
+      position: static;
+      transform: none;
+      text-align: left;
+      width: 100%;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      color: var(--ink);
+      word-break: break-word;
+    }
+    #thinking.visible, #transcript.visible, #reply.visible { opacity: 1; }
+
+    /* Live thinking (the agent's reasoning, streamed) — faint, above */
+    #thinking {
+      max-height: 62px;
+      overflow: hidden;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 10.5px;
+      line-height: 1.45;
+      letter-spacing: 0.4px;
+      color: rgba(150, 214, 255, 0.62);
+      -webkit-mask-image: linear-gradient(to bottom, transparent, #000 38%, #000);
+      mask-image: linear-gradient(to bottom, transparent, #000 38%, #000);
+    }
+
+    /* What it heard */
+    #transcript {
+      font-size: 12.5px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.55);
+      min-height: 0;
+    }
+
+    /* What it says — the bit you actually read */
+    #reply {
+      font-size: 17px;
+      line-height: 1.35;
+      font-weight: 500;
+      text-shadow: 0 2px 14px rgba(0, 0, 0, 0.9);
+      max-height: 5.4em;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 4;
+      -webkit-box-orient: vertical;
+    }
+
+    /* ── Action preview card (what it understood / did) ───────────── */
+    #action-card {
+      position: fixed;
+      top: 56px;   /* below the corner HUD: status + meter left, clock right */
+      left: 50%;
+      transform: translate(-50%, -12px);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      width: min(86vw, 430px);
+      padding: 11px 14px;
+      border-radius: 14px;
+      background: rgba(12, 16, 24, 0.86);
+      border: 1px solid rgba(122, 211, 255, 0.28);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+      color: #eaf6ff;
+      z-index: 105;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.22s ease, transform 0.22s ease;
+    }
+    #action-card.visible { opacity: 1; transform: translate(-50%, 0); }
+    #action-card.err { border-color: rgba(255, 120, 120, 0.5); }
+    #action-card .ic { font-size: 18px; line-height: 1.2; }
+    #action-card .t {
+      font-size: 12.5px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      line-height: 1.35;
+    }
+    #action-card .d {
+      margin-top: 3px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: rgba(190, 225, 255, 0.66);
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* ── Hidden config sheet (hold the bottom-left corner) ───────── */
+    #config-hotspot {
+      position: fixed;
+      left: 0; bottom: 0;
+      width: 68px; height: 68px;
+      z-index: 120;
+    }
+    #config-panel {
+      position: fixed;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      gap: 12px;
+      padding: 28px;
+      background: rgba(8, 8, 12, 0.96);
+      z-index: 200;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      color: #eaf6ff;
+    }
+    #config-panel.open { display: flex; }
+    #config-panel h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: rgba(150, 214, 255, 0.8);
+    }
+    #config-panel label {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.55);
+    }
+    #config-panel input {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      padding: 11px 12px;
+      color: #fff;
+      font-size: 14px;
+      font-family: inherit;
+    }
+    #config-panel select {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      padding: 11px 12px;
+      color: #fff;
+      font-size: 14px;
+      font-family: inherit;
+    }
+    #config-panel label.chk {
+      flex-direction: row;
+      align-items: center;
+      gap: 9px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+    #config-panel label.chk input { width: 18px; height: 18px; }
+    #config-panel .row { display: flex; gap: 10px; margin-top: 6px; }
+    #config-panel button {
+      flex: 1;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(122, 211, 255, 0.4);
+      background: rgba(122, 211, 255, 0.14);
+      color: #eaf6ff;
+      font-family: inherit;
+      font-size: 13px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+    #config-panel p { font-size: 11px; color: rgba(255, 255, 255, 0.4); margin: 4px 0 0; }
+    #thinking::before {
+      content: '\2726';
+      display: block;
+      font-size: 11px;
+      opacity: 0.7;
+      animation: thinkpulse 1.6s ease-in-out infinite;
+    }
+    @keyframes thinkpulse {
+      0%, 100% { opacity: 0.25; transform: translateY(0); }
+      50% { opacity: 0.9; transform: translateY(-1px); }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="status-banner">Tap anywhere to enable camera &amp; microphone</div>
+
+  <div class="robot-head" id="head">
+    <div class="face-layer" id="face-layer">
+      <!-- Eyes: hand-drawn face states (35-expression style), crossfaded by
+           .active; the tracker div slides them for gaze/saccades -->
+      <div class="eye-tracker" id="tracker">
+
+        <!-- 1. Neutral — Calm/Normal: two uneven ovals -->
+        <svg class="face-state" id="face-neutral" viewBox="0 0 400 250">
+          <path d="M 90 126 C 85 96 105 74 132 77 C 159 80 174 103 169 131 C 164 159 145 175 122 171 C 99 167 94 151 90 126 Z" />
+          <path d="M 252 122 C 247 93 268 72 295 76 C 322 80 336 105 330 133 C 324 161 304 177 281 172 C 259 167 256 148 252 122 Z" />
+        </svg>
+
+        <!-- 2. Curious / attentive — one big eye, one small, brow flick -->
+        <svg class="face-state" id="face-curious" viewBox="0 0 400 250">
+          <path d="M 84 130 C 79 99 101 76 130 79 C 159 82 175 106 170 135 C 165 164 144 180 119 175 C 95 170 89 155 84 130 Z" />
+          <path d="M 266 140 C 263 119 278 103 299 106 C 320 109 331 127 327 147 C 323 167 307 179 289 175 C 273 171 269 158 266 140 Z" />
+          <path d="M 276 76 C 291 63 315 66 323 78" />
+          <path d="M 348 92 C 357 81 353 68 343 70" />
+        </svg>
+
+        <!-- 3. Happy — two domes + excitement ticks -->
+        <svg class="face-state" id="face-happy" viewBox="0 0 400 250">
+          <path d="M 66 153 C 64 113 91 84 125 86 C 157 88 177 117 175 153 Z" />
+          <path d="M 252 155 C 251 120 277 96 308 99 C 337 102 353 127 350 155 Z" />
+          <path d="M 97 60 L 105 44" />
+          <path d="M 127 54 L 131 39" />
+          <path d="M 154 61 L 163 49" />
+        </svg>
+
+        <!-- 4. Excited — slanted wedges -->
+        <svg class="face-state" id="face-excited" viewBox="0 0 400 250">
+          <path d="M 62 94 C 100 110 142 130 174 150 C 147 161 101 151 63 127 C 58 117 57 103 62 94 Z" />
+          <path d="M 346 92 C 310 108 268 128 236 148 C 262 160 306 151 344 127 C 349 117 350 101 346 92 Z" />
+          <path d="M 200 56 L 210 42" />
+          <path d="M 232 62 L 244 52" />
+        </svg>
+
+        <!-- 5. Thinking — Pensive: half-lidded lenses -->
+        <svg class="face-state" id="face-pensive" viewBox="0 0 400 250">
+          <path d="M 64 118 C 97 111 145 111 176 118 C 152 149 97 151 64 118 Z" />
+          <path d="M 246 122 C 277 115 323 115 352 122 C 328 154 275 155 246 122 Z" />
+        </svg>
+
+        <!-- 6. Confused — bowl + tilted oval + brow flick -->
+        <svg class="face-state" id="face-confused" viewBox="0 0 400 250">
+          <path d="M 66 112 L 169 115 C 167 149 145 174 118 171 C 90 168 69 143 66 112 Z" />
+          <path d="M 264 116 C 255 91 276 70 304 77 C 332 84 342 113 331 138 C 320 162 291 169 274 154 C 263 144 268 131 264 116 Z" />
+          <path d="M 300 56 C 313 46 332 51 336 64" />
+        </svg>
+
+        <!-- 7. Sad — drooping bowls -->
+        <svg class="face-state" id="face-sad" viewBox="0 0 400 250">
+          <path d="M 64 108 C 97 103 147 103 177 108 C 173 149 147 174 118 171 C 88 168 69 143 64 108 Z" />
+          <path d="M 248 113 C 279 108 326 108 354 113 C 350 152 326 175 297 172 C 269 169 253 149 248 113 Z" />
+        </svg>
+
+        <!-- 8. Angry — slashes + rage ticks -->
+        <svg class="face-state" id="face-angry" viewBox="0 0 400 250">
+          <path d="M 59 91 C 100 111 143 133 175 151 C 150 164 102 153 61 127 C 55 117 55 100 59 91 Z" />
+          <path d="M 347 93 C 311 111 266 133 234 151 C 258 164 305 154 345 129 C 351 119 351 102 347 93 Z" />
+          <path d="M 196 60 L 215 44" />
+          <path d="M 228 67 L 247 56" />
+        </svg>
+
+        <!-- 9. Bored — flat squashed domes -->
+        <svg class="face-state" id="face-bored" viewBox="0 0 400 250">
+          <path d="M 64 149 C 67 122 93 107 123 110 C 153 113 173 129 175 149 Z" />
+          <path d="M 250 152 C 253 127 278 113 306 116 C 334 119 351 135 353 152 Z" />
+          <path d="M 74 168 C 104 176 148 176 170 168" />
+          <path d="M 256 171 C 286 179 330 179 350 171" />
+        </svg>
+
+        <!-- 10. Sleepy — Tired: droopy arcs + bags -->
+        <svg class="face-state" id="face-sleepy" viewBox="0 0 400 250">
+          <path d="M 64 115 C 93 149 147 154 177 121" />
+          <path d="M 246 120 C 275 154 325 157 353 125" />
+          <path d="M 96 157 L 89 173" />
+          <path d="M 302 161 L 309 175" />
+        </svg>
+
+        <!-- 11. Asleep — closed lids -->
+        <svg class="face-state" id="face-asleep" viewBox="0 0 400 250">
+          <path d="M 64 127 C 97 157 151 159 179 130" />
+          <path d="M 244 132 C 277 162 329 161 355 135" />
+        </svg>
+
+        <!-- 12. Wink / flirty — lidded slash + open eye + lashes -->
+        <svg class="face-state" id="face-wink" viewBox="0 0 400 250">
+          <path d="M 64 133 C 96 111 147 108 178 128" />
+          <path d="M 259 131 C 254 104 276 83 305 88 C 334 93 347 118 341 145 C 335 172 311 186 287 180 C 266 175 263 155 259 131 Z" />
+          <path d="M 323 74 L 337 62" />
+          <path d="M 347 92 L 362 85" />
+        </svg>
+
+        <!-- 13. Dead / error — hand-drawn X eyes -->
+        <svg class="face-state" id="face-dead" viewBox="0 0 400 250">
+          <path d="M 78 95 C 107 119 141 147 165 165" />
+          <path d="M 167 97 C 141 121 104 147 80 165" />
+          <path d="M 250 97 C 279 121 313 149 337 167" />
+          <path d="M 339 99 C 313 123 278 149 254 167" />
+        </svg>
+
+        <!-- 14. Loading — dot—line—dot scanner -->
+        <svg class="face-state" id="face-loading" viewBox="0 0 400 250">
+          <circle class="fill-black" cx="86" cy="125" r="17" />
+          <path d="M 114 125 L 286 125" stroke-width="12" />
+          <circle class="fill-black" cx="314" cy="125" r="17" />
+        </svg>
+
+        <!-- 15. Surprised — big shocked circles + ticks -->
+        <svg class="face-state" id="face-surprised" viewBox="0 0 400 250">
+          <path d="M 77 131 C 72 96 99 69 132 73 C 165 77 183 107 177 140 C 171 173 146 191 117 185 C 91 180 81 159 77 131 Z" />
+          <path d="M 245 127 C 240 93 267 67 300 71 C 333 75 351 105 345 138 C 339 171 314 189 285 183 C 259 178 249 155 245 127 Z" />
+          <path d="M 66 74 L 53 60" />
+          <path d="M 349 76 L 363 63" />
+        </svg>
+
+      </div>
+
+      <!-- Mouth: dot—line—dot, shown ONLY while speaking; stays centred
+           while the eyes track -->
+      <svg class="face-mouth" id="face-mouth" viewBox="0 0 400 250">
+        <circle class="fill-black" id="mouth-dot-l" cx="150" cy="196" r="15"/>
+        <path id="mouth-line" d="M 165 196 Q 200 196 235 196" stroke-width="14"/>
+        <circle class="fill-black" id="mouth-dot-r" cx="250" cy="196" r="15"/>
+      </svg>
+    </div>
+    <div id="zz">z</div>
+  </div>
+
+  <div class="audio-meter" id="audio-meter">
+    <div class="audio-meter-bar" id="audio-meter-bar"></div>
+  </div>
+
+  <div id="wake-status"></div>
+  <div id="clock-chip"></div>
+  <div id="config-hotspot" title="Hold to open settings"></div>
+  <div id="config-panel">
+    <h3>Loona brain</h3>
+    <label>Server<input id="cfg-url" inputmode="url" autocapitalize="off" autocomplete="off"></label>
+    <label>API key<input id="cfg-key" type="password" autocapitalize="off" autocomplete="off"></label>
+    <label>Model<input id="cfg-model" autocapitalize="off" autocomplete="off"></label>
+    <label>Fast path<input id="cfg-path" inputmode="url" autocapitalize="off" autocomplete="off" placeholder="/p/loona-fast/"></label>
+    <label>Fast key<input id="cfg-key-fast" type="password" autocapitalize="off" autocomplete="off"></label>
+    <label>Fast model<input id="cfg-model-fast" autocapitalize="off" autocomplete="off"></label>
+    <p id="cfg-profile">Active profile: <span id="cfg-profile-val">root</span></p>
+    <label>Γλώσσα / Language
+      <select id="cfg-lang">
+        <option value="el-GR">Ελληνικά</option>
+        <option value="en-US">English</option>
+      </select>
+    </label>
+    <label class="chk"><input type="checkbox" id="cfg-ond"> On-device only (audio never leaves the phone)</label>
+    <label>Whisper (LAN)<input id="cfg-whisper" inputmode="url" autocapitalize="off" autocomplete="off" placeholder="https://whisper.example.com:10300"></label>
+    <label class="chk"><input type="checkbox" id="cfg-whisper-on"> Hear commands with whisper on the LAN</label>
+    <div class="row">
+      <button id="cfg-save">Save</button>
+      <button id="cfg-close">Close</button>
+    </div>
+    <p id="cfg-hint">Hold the bottom-left corner for a second to reopen.</p>
+    <p id="cfg-panel">Web panel: —</p>
+  </div>
+
+  <div id="action-card"><span class="ic"></span><div><div class="t"></div><div class="d"></div></div></div>
+  <div id="captions">
+    <div id="thinking"></div>
+    <div id="transcript"></div>
+    <div id="reply"></div>
+  </div>
+
+  <video id="webcam" autoplay muted playsinline></video>
+
+  <script>
+    'use strict';
+
+    /* ══════════════════════════════════════════════════════════════
+       0. Small helpers
+       ══════════════════════════════════════════════════════════════ */
+
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+    const now = () => performance.now();
+
+    const head = document.getElementById('head');
+    const faceLayer = document.getElementById('face-layer');
+    const tracker = document.getElementById('tracker');
+    const wakeStatus = document.getElementById('wake-status');
+    const audioMeter = document.getElementById('audio-meter');
+    const audioMeterBar = document.getElementById('audio-meter-bar');
+    const transcriptEl = document.getElementById('transcript');
+    const replyEl = document.getElementById('reply');
+
+    /* ── Face states: pre-drawn SVGs toggled by .active ───────────── */
+    const FACE_STATES = ['happy', 'curious', 'wink', 'angry', 'confused',
+                         'neutral', 'sad', 'sleepy', 'asleep', 'bored',
+                         'dead', 'loading', 'excited', 'pensive', 'surprised'];
+    const faceEls = {};
+    FACE_STATES.forEach(n => { faceEls[n] = document.getElementById('face-' + n); });
+    let activeFace = null;
+
+    function showFace(name) {
+      const el = faceEls[name] || faceEls.neutral;
+      if (el === activeFace) return;
+      if (activeFace) activeFace.classList.remove('active');
+      el.classList.add('active');
+      activeFace = el;
+    }
+
+    /* ── Mouth: dot—line—dot, visible only while speaking ─────────── */
+    const mouthSvg = document.getElementById('face-mouth');
+    const mouthLine = document.getElementById('mouth-line');
+    const mouthDotL = document.getElementById('mouth-dot-l');
+    const mouthDotR = document.getElementById('mouth-dot-r');
+
+    /* Mood → face state (the 35-expression hand-drawn set) */
+    const MOOD_FACE = {
+      neutral: 'neutral',   attentive: 'curious',  happy: 'happy',
+      excited: 'excited',   surprised: 'surprised', thinking: 'pensive',
+      confused: 'confused', sad: 'sad',            angry: 'angry',
+      bored: 'bored',       sleepy: 'sleepy',      asleep: 'asleep',
+      wink: 'wink',         dead: 'dead'
+    };
+
+    function faceForMood(mood) { return MOOD_FACE[mood] || 'neutral'; }
+
+    /* ══════════════════════════════════════════════════════════════
+       1. FACE ENGINE
+       Every expression is a set of continuous parameters; the actual
+       face eases toward them, so nothing ever snaps or "switches".
+       ══════════════════════════════════════════════════════════════ */
+
+    const BASE = {
+      gazeX: 0,        // eye-tracker offset in px
+      gazeY: 0,
+      mouthCurve: 0,   // bow of the mouth line (+ = smile/open)
+      mouthOpen: 0,    // 0..1 speaking amplitude
+      tilt: 0,         // head tilt in degrees
+      slump: 0         // head sink in px
+    };
+
+    // Each mood picks a pre-drawn face via MOOD_FACE; these params only
+    // drive head pose, gaze pinning and the speaking mouth.
+    const EXPRESSIONS = {
+      neutral:   {},
+      attentive: { tilt: 3 },
+      happy:     { mouthCurve: 5 },
+      excited:   { tilt: -3, mouthCurve: 8, mouthOpen: 0.34 },
+      surprised: { mouthOpen: 0.5 },
+      thinking:  { gazeX: 12, gazeY: -9, tilt: -5 },
+      confused:  { tilt: 7 },
+      sad:       { tilt: -5, gazeY: 6, mouthCurve: -6 },
+      angry:     { mouthCurve: -4 },
+      bored:     { tilt: -4, gazeX: -10 },
+      sleepy:    { tilt: -7, slump: 3 },
+      asleep:    { tilt: -9, slump: 7, gazeY: 4 },
+      wink:      { gazeX: 8 },
+      dead:      {}
+    };
+
+    let target = Object.assign({}, BASE, EXPRESSIONS.neutral);
+    let cur = Object.assign({}, BASE, EXPRESSIONS.neutral);
+    let currentMood = 'neutral';
+
+    let blinkPhase = 'idle';     // idle | closing | opening
+    let blinkT0 = 0;
+    let blinking = false;        // true while the sleepy face stands in for a blink
+    let nextBlinkAt = 0;
+
+    let gazeTX = 0, gazeTY = 0;  // targets, kept separate from the eased gaze
+    let nextSaccade = 0;
+    let faceVisible = false;
+    let faceTrackingLive = false; // true once face-api has actually produced a detection loop
+    let facingPhone = false;      // face is present AND roughly centred (looking at the phone)
+
+    let expressionGaze = false;   // when an expression pins the gaze, saccades stand down
+
+    function setMood(name) {
+      const ex = EXPRESSIONS[name];
+      if (!ex) return;
+      currentMood = name;
+      target = Object.assign({}, BASE, ex);
+      expressionGaze = (ex.gazeX !== undefined || ex.gazeY !== undefined);
+      if (expressionGaze) {
+        gazeTX = target.gazeX || 0;
+        gazeTY = target.gazeY || 0;
+      }
+      if (!blinking) showFace(faceForMood(name));  // a blink restores the mood face itself
+    }
+
+    function scheduleBlink(delayMs) {
+      nextBlinkAt = now() + (delayMs === undefined ? rand(2400, 6800) : delayMs);
+    }
+    scheduleBlink(1200);
+
+    function updateBlink(t) {
+      if (currentMood === 'asleep' || appState === 'sleeping') return; // eyes already closed
+      if (appState === 'speaking' && blinkPhase === 'idle') {
+        // Blink a bit less while talking so the mouth animation reads clearly
+        if (t >= nextBlinkAt) scheduleBlink(600);
+        return;
+      }
+      if (blinkPhase === 'idle' && t >= nextBlinkAt) {
+        blinkPhase = 'closing';
+        blinkT0 = t;
+        // The reference blink: flash the sleepy (lid-arcs) face for ~120ms.
+        blinking = true;
+        showFace('sleepy');
+      }
+
+      if (blinkPhase === 'closing') {
+        if (t - blinkT0 >= 110) { blinkPhase = 'opening'; blinkT0 = t; }
+      } else if (blinkPhase === 'opening') {
+        if (t - blinkT0 >= 130) {
+          blinkPhase = 'idle';
+          blinking = false;
+          showFace(faceForMood(currentMood));
+          scheduleBlink();
+          if (Math.random() < 0.2) scheduleBlink(230); // occasional double blink
+        }
+      }
+    }
+
+    function updateGaze(t) {
+      if (faceVisible) return;            // the camera owns the gaze
+      if (expressionGaze) {                // thinking/sad/bored hold their own look
+        gazeTX = target.gazeX || 0;
+        gazeTY = target.gazeY || 0;
+        return;
+      }
+      if (appState === 'asleep' || appState === 'sleeping') return;
+      if (t < nextSaccade) return;
+      nextSaccade = t + rand(900, 2800);
+      if (Math.random() < 0.25) { gazeTX = 0; gazeTY = 0; return; }
+      gazeTX = rand(-11, 11);
+      gazeTY = rand(-7, 7);
+    }
+
+    function updateSpeechMouth(t) {
+      if (appState !== 'speaking') return;
+      const s = t / 1000;
+      const wave =
+        0.46 +
+        0.28 * Math.sin(s * 12.9) +
+        0.18 * Math.sin(s * 7.4 + 1.2) +
+        0.10 * Math.sin(s * 24.3 + 0.4);
+      target.mouthOpen = clamp(wave, 0.10, 0.95);
+      target.mouthCurve = 3 + 4 * Math.sin(s * 3.1);   // slight smile while talking
+    }
+
+    /* Boredom / silence ladder — the robot gets drowsy if nothing happens */
+    function updateSilence(t) {
+      if (appState !== 'idle') return;
+      const silent = (t - lastActivity) / 1000;
+      if (silent > 150) {
+        setState('sleeping');
+      } else if (silent > 75) {
+        if (currentMood !== 'sleepy' && currentMood !== 'asleep') setMood('sleepy');
+      } else if (silent > 32) {
+        if (currentMood === 'neutral' || currentMood === 'attentive') setMood('bored');
+      }
+    }
+
+    /* ── Boil: the hand-drawn lines wobble like frame-by-frame animation ── */
+    let lastBoil = 0;
+    function updateBoil(t) {
+      if (t - lastBoil < 130) return;      // ~8 frames/sec of line jitter
+      lastBoil = t;
+      const svg = activeFace;
+      if (!svg) return;
+      const kids = svg.children;
+      for (let i = 0; i < kids.length; i++) {
+        const el = kids[i];
+        let bb;
+        try { bb = el.getBBox(); } catch (e) { continue; }
+        const cx = bb.x + bb.width / 2;
+        const cy = bb.y + bb.height / 2;
+        const dx = (Math.random() - 0.5) * 3.4;
+        const dy = (Math.random() - 0.5) * 3.4;
+        const r = (Math.random() - 0.5) * 4.5;
+        el.setAttribute('transform',
+          `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) rotate(${r.toFixed(2)} ${cx.toFixed(1)} ${cy.toFixed(1)})`);
+      }
+    }
+
+    function ease(current, goal, factor) {
+      const d = goal - current;
+      if (Math.abs(d) < 0.001) return goal;
+      return current + d * factor;
+    }
+
+    /* Render: gaze slides the tracker div, the dot—line—dot mouth appears
+       only while speaking, and the face layer carries tilt/slump. */
+    function renderFace(t) {
+      const alive = (appState === 'dead' || appState === 'sleeping') ? 0 : 1;
+
+      // Eyes track: eased gaze slides every face state together.
+      const jitterX = Math.sin(t * 0.00043 + 0.9) * 1.2 * alive;
+      const jitterY = Math.sin(t * 0.00061) * 0.9 * alive;
+      const gx = clamp(cur.gazeX, -15, 15) + jitterX;
+      const gy = clamp(cur.gazeY, -10, 10) + jitterY;
+      tracker.style.transform = `translate(${gx.toFixed(2)}px, ${gy.toFixed(2)}px)`;
+
+      // Mouth: dot—line—dot, visible ONLY while speaking (reference style).
+      const speaking = appState === 'speaking';
+      mouthSvg.style.opacity = speaking ? '1' : '0';
+      if (speaking) {
+        const open = clamp(cur.mouthOpen, 0, 1);      // 0..1 lip separation
+        const curve = cur.mouthCurve;                 // + = smile arc
+        const halfW = 36 + open * 10;
+        const x1 = 200 - halfW;
+        const x2 = 200 + halfW;
+        const yMid = 196;
+        const yEnd = yMid - curve * 0.6;              // corners lift on a smile
+        const ctl = yMid + curve * 1.4 + open * 26;   // bow opens downward as speech grows
+        mouthLine.setAttribute('d',
+          `M ${x1.toFixed(1)} ${yEnd.toFixed(1)} Q 200 ${ctl.toFixed(1)} ${x2.toFixed(1)} ${yEnd.toFixed(1)}`);
+        mouthLine.setAttribute('stroke-width', (12 + open * 8).toFixed(1));
+
+        const dotR = 11 + open * 7;
+        mouthDotL.setAttribute('r', dotR.toFixed(1));
+        mouthDotR.setAttribute('r', dotR.toFixed(1));
+        mouthDotL.setAttribute('cx', (x1 - dotR).toFixed(1));
+        mouthDotR.setAttribute('cx', (x2 + dotR).toFixed(1));
+        mouthDotL.setAttribute('cy', yEnd.toFixed(1));
+        mouthDotR.setAttribute('cy', yEnd.toFixed(1));
+      }
+
+      // Head tilt/slump; while speaking it picks up a small rhythmic bob.
+      let tilt = cur.tilt;
+      let slump = cur.slump;
+      if (appState === 'speaking') {
+        tilt += Math.sin(t * 0.006) * 0.7;
+        slump += Math.sin(t * 0.0125) * 1.4;
+      }
+      faceLayer.style.transform =
+        `rotate(${tilt.toFixed(2)}deg) translateY(${slump.toFixed(1)}px)`;
+    }
+
+    function faceFrame(t) {
+      updateBlink(t);
+      updateGaze(t);
+      updateSpeechMouth(t);
+      updateSilence(t);
+      updateBoil(t);
+
+      // Ease every parameter toward its target; ~0.16 gives a soft 150ms feel.
+      // The mouth tracks faster while talking so lip-sync stays crisp.
+      for (const key in target) {
+        const f = (key === 'mouthOpen' && appState === 'speaking') ? 0.5 : 0.16;
+        cur[key] = ease(cur[key], target[key], f);
+      }
+
+      // Gaze eases separately (it is driven by saccades and the camera)
+      cur.gazeX = ease(cur.gazeX, gazeTX, 0.22);
+      cur.gazeY = ease(cur.gazeY, gazeTY, 0.22);
+
+      renderFace(t);
+      requestAnimationFrame(faceFrame);
+    }
+
+    function shake() {
+      head.classList.remove('shake');
+      void head.offsetWidth;
+      head.classList.add('shake');
+      setTimeout(() => head.classList.remove('shake'), 560);
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       2. STATE MACHINE
+       ══════════════════════════════════════════════════════════════ */
+
+    const WAKE_PHRASE = 'loona';
+    let appState = 'idle';
+    let lastActivity = now();
+    let wakeResetTimer = null;
+    let listenTimer = null;
+    let thinkTimer = null;
+    let listenPopTimer = null;   // surprised → curious hand-off after a wake
+
+    function noteActivity() { lastActivity = now(); if (typeof scheduleDim === 'function') scheduleDim(); }
+
+    function setStatus(text) {
+      if (!text) { wakeStatus.classList.remove('visible'); return; }
+      wakeStatus.textContent = text;
+      wakeStatus.classList.add('visible');
+    }
+
+    function setState(next) {
+      if (appState === next) {
+        // Re-entering idle must still re-arm the wake word, otherwise a turn
+        // that ends while already idle leaves the listener dead.
+        if (next === 'idle') { wakeArmed = true; startWakeLoop(); }
+        return;
+      }
+      appState = next;
+      noteActivity();
+      document.body.classList.toggle('state-sleeping', next === 'sleeping');
+      document.body.classList.toggle('state-dead', next === 'dead');
+
+      switch (next) {
+        case 'idle':      setMood('neutral');   setStatus(''); wakeArmed = true; endTurn(); break;
+        case 'sleeping':  setMood('asleep');    setStatus(''); break;
+        case 'listening':
+          // Perk up (surprised face) the moment the wake word lands, then
+          // settle into the curious "I'm listening" look.
+          setMood('surprised');
+          clearTimeout(listenPopTimer);
+          listenPopTimer = setTimeout(() => {
+            if (appState === 'listening') setMood('attentive');
+          }, 900);
+          // No "Listening" label in the corner — looks cleaner; she just listens.
+          // Hard ceiling: never sit in "Listening" forever if a level spike
+          // opened the state and no speech followed.
+          if (!wakeResetTimer && !listenTimer) {
+            listenTimer = setTimeout(() => {
+              if (appState === 'listening') setState('idle');
+            }, 20000);
+          }
+          break;
+        case 'waking':    setMood('surprised'); shake(); setStatus('Hmm?'); break;
+        case 'thinking':
+          setMood('thinking');
+          setStatus('Thinking');
+          // The listening watchdog must not kill a long model turn.
+          clearTimeout(wakeResetTimer);
+          break;
+        case 'speaking':
+          setMood('happy');
+          setStatus('');
+          clearTimeout(wakeResetTimer);
+          break;
+        case 'dead':      setMood('dead');      setStatus('Offline'); break;
+      }
+
+      if (next === 'idle' || next === 'dead' || next === 'sleeping') {
+        clearTimeout(wakeResetTimer);
+        clearTimeout(listenTimer);
+        clearTimeout(thinkTimer);
+        clearTimeout(listenPopTimer);
+        wakeResetTimer = null;
+        listenTimer = null;
+        thinkTimer = null;
+        listenPopTimer = null;
+      }
+      console.log(`[State] ${next}`);
+    }
+
+    /* A short two-note chirp so you know she heard you, before any TTS.
+       Synthesised, so it never waits on a file or on the network. */
+    let toneCtx = null;
+    function playListenTone(rising) {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!toneCtx) toneCtx = new AC();
+        if (toneCtx.state === 'suspended') toneCtx.resume();
+        const t0 = toneCtx.currentTime + 0.01;
+        (rising ? [660, 990] : [880, 620]).forEach((f, i) => {
+          const o = toneCtx.createOscillator();
+          const g = toneCtx.createGain();
+          const at = t0 + i * 0.11;
+          o.type = 'sine';
+          o.frequency.setValueAtTime(f, at);
+          g.gain.setValueAtTime(0.0001, at);
+          g.gain.exponentialRampToValueAtTime(0.18, at + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, at + 0.17);
+          o.connect(g).connect(toneCtx.destination);
+          o.start(at);
+          o.stop(at + 0.19);
+        });
+      } catch (e) { /* audio unavailable — the face still answers */ }
+    }
+
+    /* Wake word → visible, audible acknowledgement, then listen */
+    function playLocalAck() {
+      const src = ACK_SOUNDS[Math.floor(Math.random() * ACK_SOUNDS.length)];
+      try {
+        const a = new Audio(src);
+        a.volume = 0.85;
+        a.play().catch(() => {});
+      } catch (e) { /* ignore */ }
+    }
+
+    let lastWake = -99999;
+    function onWakeWord(trigger, tail) {
+      const t = now();
+      if (t - lastWake < 2500) return;
+      wakeFired = true;
+      if (appState === 'dead') return;
+
+      // No gaze gate here: it used to silently drop every wake when the phone
+      // was angled or the face detector hadn't caught up. The wake word is now
+      // real speech recognition (or the envelope fallback), which is precise
+      // enough on its own — the camera only aims the eyes.
+      if (faceTrackingLive && !faceVisible) {
+        console.log('[Wake] no face in frame — waking anyway');
+      }
+
+      lastWake = t;
+      wakeFiredAt = t;
+      if (dimmed) { dimmed = false; Bridge.call('display', { dim: -1 }, 4000).catch(() => {}); }
+      // Bring Loona to the foreground when woken while another app is open.
+      Bridge.call('foreground', {}).catch(() => {});
+
+      console.log(`[Wake] Detected via ${trigger}` + (tail ? ` — command: "${tail}"` : ''));
+      wakeArmed = false;
+      setState('waking');
+      if (uiCfg().chime !== false) playListenTone(true);
+      if (socket && socket.connected) socket.emit('wake_detected', { phrase: WAKE_PHRASE });
+
+      clearTimeout(wakeResetTimer);
+      // 400 ms: enough for the chime to start, short enough that the command
+      // isn't missed while the mic is still closed.
+      setTimeout(() => {
+        if (appState === 'waking') { setState('listening'); startTurn(tail || ''); }
+      }, 400);
+      const listenWindow = Math.max(4, Number(uiCfg().timeout) || 12) * 1000;
+      wakeResetTimer = setTimeout(() => {
+        if (appState === 'listening') setState('idle');
+      }, listenWindow);
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       3. BOOT SEQUENCE
+       ══════════════════════════════════════════════════════════════ */
+
+    // Boot like the reference: loading → excited → neutral
+    showFace('loading');
+    setTimeout(() => {
+      setMood('excited');
+      shake();
+      setTimeout(() => { setMood('neutral'); }, 1100);
+    }, 700);
+
+    /* ══════════════════════════════════════════════════════════════
+       4. VOICE — one microphone, adaptive wake-word + activity sensing
+       ══════════════════════════════════════════════════════════════ */
+
+    let audioCtx = null;
+    let analyser = null;
+    let micStream = null;
+    let micSourceNode = null;
+    let audioReady = false;
+
+    const timeData = new Uint8Array(1024);
+    let noiseFloor = 0.008;
+    let lastSurprise = -99999;
+    let wakeArmed = true;
+    let speechOn = false;
+    let lastLoudAt = 0;
+
+    // Envelope wake detector (see wake.js). Its diagnostics are logged as
+    // "[Wake] utterance {...}" so real speech is inspectable over adb logcat.
+    const wakeDet = (typeof PALWake !== 'undefined' && PALWake.createWakeDetector)
+      ? PALWake.createWakeDetector({
+          onDiagnostic: s => console.log('[Wake] utterance ' + JSON.stringify(s))
+        })
+      : null;
+    if (!wakeDet) console.warn('[Wake] wake.js missing — wake word disabled');
+
+    function rmsOf() {
+      analyser.getByteTimeDomainData(timeData);
+      let sum = 0;
+      for (let i = 0; i < timeData.length; i++) {
+        const v = (timeData[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / timeData.length);
+    }
+
+    function levelPercent(rms) {
+      return clamp(Math.sqrt(rms) * 240, 0, 100);
+    }
+
+    function voiceLoop() {
+      if (!audioReady || !analyser) return;
+      requestAnimationFrame(voiceLoop);
+
+      const t = now();
+      const rms = rmsOf();
+
+      // Local noise floor for the meter and the flinch check; the detector keeps
+      // its own (stricter) floor that speech cannot inflate.
+      if (rms < noiseFloor) noiseFloor += (rms - noiseFloor) * 0.30;
+      else noiseFloor += (rms - noiseFloor) * 0.004;
+      noiseFloor = clamp(noiseFloor, 0.0015, 0.05);
+
+      let threshold = Math.max(0.014, noiseFloor * 2.4);
+      let voiced = rms > threshold;
+
+      if (wakeDet) {
+        const events = wakeDet.push(t, rms);
+        for (const ev of events) {
+          if (ev.type === 'wake' && wakeArmed) onWakeWord('voice');
+        }
+        const lv = wakeDet.level();
+        voiced = lv.voiced;
+        threshold = lv.threshold;
+      }
+
+      const speakingNow = appState === 'speaking';
+      const loud = voiced && !speakingNow;
+
+      audioMeterBar.style.width = (loud ? levelPercent(rms) : levelPercent(rms) * 0.5) + '%';
+
+      if (loud) {
+        lastLoudAt = t;
+        if (!speechOn) {
+          speechOn = true;
+          onVoiceStart();
+        }
+        // A sudden, much louder sound than the room → flinch
+        if (rms > Math.max(0.16, noiseFloor * 8) && t - lastSurprise > 4000) {
+          lastSurprise = t;
+          onLoudNoise();
+        }
+      } else if (speechOn && t - lastLoudAt > 550) {
+        speechOn = false;
+        onVoiceEnd();
+      }
+    }
+
+    /* ── voice levels from the native recognizer (app mode) ──────────
+       The WebView must NOT open its own microphone: Android hands the recorder
+       to one client at a time, so the analyser stream starved
+       SpeechRecognizer — that is why the wake word "did nothing". PalBridge
+       forwards SpeechRecognizer.onRmsChanged instead, so the face still reacts
+       to your voice and the silence ladder still works. */
+    let nativeFloor = 0.02;
+    let lastNativeHeard = 0;
+    let voiceRun = 0;                  // consecutive voiced frames (debounce)
+    let envelopeFallback = false;      // true only if speech recognition keeps failing
+    let sttHardErrors = 0;
+
+    function onNativeLevel(level) {
+      if (typeof level !== 'number' || !isFinite(level)) return;
+      level = clamp(level, 0, 1);
+      const t = now();
+
+      if (level < nativeFloor) nativeFloor += (level - nativeFloor) * 0.25;
+      else nativeFloor += (level - nativeFloor) * 0.006;
+      nativeFloor = clamp(nativeFloor, 0.005, 0.35);
+
+      const thresh = Math.max(0.18, nativeFloor * 2.2);
+      const voiced = level > thresh;
+      audioMeterBar.style.width = (voiced ? level * 100 : level * 55) + '%';
+
+      // Envelope wake detector runs in parallel with the speech loop (WAKE_MODE
+      // 'both'): the recognizer alone misses short Greek words, so the shape
+      // matcher gives a second chance on every voiced utterance.
+      if (wakeDet && wakeArmed && (WAKE_MODE === 'both' || envelopeFallback)) {
+        const events = wakeDet.push(t, level * 0.05);
+        for (const ev of events) {
+          if (ev.type === 'wake' && wakeArmed) onWakeWord('voice');
+        }
+      }
+
+      if (voiced) {
+        lastNativeHeard = t;
+        voiceRun++;
+        // Two voiced frames in a row (~140 ms) — knocks out the single-frame
+        // spikes the recognizer emits each time it re-arms.
+        if (!speechOn && voiceRun >= 2) { speechOn = true; onVoiceStart(); }
+        if (level > 0.88 && t - lastSurprise > 4000) {
+          lastSurprise = t;
+          onLoudNoise();
+        }
+      } else {
+        voiceRun = 0;
+        if (speechOn && t - lastNativeHeard > 520) {
+          speechOn = false;
+          onVoiceEnd();
+        }
+      }
+    }
+
+    function onVoiceStart() {
+      noteActivity();
+      // Native mode: the phone always has an ear open for the wake word, so a
+      // cough, a TV, or the fan must NOT put it in "Listening". Only the wake
+      // word itself wakes Loona; levels just animate the meter.
+      if (isNative()) return;
+      if (appState === 'sleeping') { setState('listening'); return; }
+      if (appState === 'idle') setState('listening');
+    }
+
+    function onVoiceEnd() {
+      noteActivity();
+      // Hang on attentively for a moment after you stop, then relax
+      if (appState === 'listening' && !wakeResetTimer) {
+        // You paused mid-exchange — ponder it for a moment
+        setMood('thinking');
+        clearTimeout(thinkTimer);
+        thinkTimer = setTimeout(() => {
+          if (appState === 'listening') setMood('attentive');
+        }, 1600);
+        clearTimeout(listenTimer);
+        listenTimer = setTimeout(() => {
+          if (appState === 'listening') setState('idle');
+        }, 9000);
+      }
+    }
+
+    function onLoudNoise() {
+      if (appState === 'dead' || appState === 'speaking') return;
+      noteActivity();
+      setMood('surprised');
+      setTimeout(() => {
+        if (appState === 'idle') setMood('neutral');
+        else if (appState === 'listening') setMood('attentive');
+      }, 1100);
+    }
+
+    async function initAudio() {
+      if (audioReady) return;
+      if (isNative()) {
+        // The native recognizer owns the microphone; levels arrive through
+        // the bridge (onNativeLevel). Opening getUserMedia here would silence
+        // the recognizer and the wake word with it.
+        audioReady = true;
+        audioMeter.classList.add('active');
+        console.log('[Mic] native mode — speech recognizer owns the mic');
+        return;
+      }
+      try {
+        // Browser build: one shared microphone for wake detection AND streaming
+        if (!micStream) {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+        }
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        micSourceNode = audioCtx.createMediaStreamSource(micStream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.4;
+        micSourceNode.connect(analyser);
+
+        audioReady = true;
+        audioMeter.classList.add('active');
+        console.log('[Mic] Wake-word listener ready');
+        requestAnimationFrame(voiceLoop);
+      } catch (err) {
+        console.error('[Mic] Access failed:', err);
+        audioReady = false;
+      }
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       5. CAMERA — eye contact and presence
+       ══════════════════════════════════════════════════════════════ */
+
+    const video = document.getElementById('webcam');
+    const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+    const detectorOptions = window.faceapi
+      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 })
+      : null;
+
+    let lastSeenAt = 0;
+    let wasLooking = false;
+
+    async function initFaceApi() {
+      if (!window.faceapi) {
+        console.warn('[Camera] face-api unavailable, eye contact disabled');
+        return;
+      }
+      try {
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        video.srcObject = stream;
+      } catch (err) {
+        console.error('[Camera] unavailable:', err);
+      }
+    }
+
+    video.addEventListener('play', () => {
+      async function track() {
+        try {
+          if (!detectorOptions) { requestAnimationFrame(track); return; }
+          const det = await faceapi.detectSingleFace(video, detectorOptions);
+          if (!faceTrackingLive) {
+            faceTrackingLive = true;   // the loop ran — the gate is now active
+            console.log('[Camera] gaze gate armed — face tracking live');
+          }
+          if (det && video.videoWidth) {
+            faceVisible = true;
+            lastSeenAt = now();
+            const cx = det.box.x + det.box.width / 2;
+            const cy = det.box.y + det.box.height / 2;
+            // "Looking at the phone": face present and roughly centred in frame
+            facingPhone = Math.abs(cx / video.videoWidth - 0.5) < 0.22 &&
+                          Math.abs(cy / video.videoHeight - 0.5) < 0.30;
+            gazeTX = clamp((0.5 - cx / video.videoWidth) * 26, -13, 13);
+            gazeTY = clamp((cy / video.videoHeight - 0.5) * 22, -10, 10);
+
+            if (!wasLooking) {
+              wasLooking = true;
+              console.log(`[Camera] face visible — looking at phone: ${facingPhone}`);
+              onFaceAppeared();
+            }
+          } else {
+            faceVisible = false;
+            facingPhone = false;
+            if (wasLooking && now() - lastSeenAt > 1200) {
+              wasLooking = false;
+              console.log('[Camera] face lost');
+              onFaceLost();
+            }
+          }
+        } catch (err) {
+          faceVisible = false;
+          facingPhone = false;
+        }
+        requestAnimationFrame(track);
+      }
+      track();
+    });
+
+    function onFaceAppeared() {
+      if (appState === 'sleeping') { setState('listening'); return; }
+      if (appState === 'idle' && currentMood !== 'happy' && currentMood !== 'excited') {
+        setMood('attentive');
+        setTimeout(() => {
+          if (appState === 'idle' && currentMood === 'attentive') setMood('neutral');
+        }, 2200);
+      }
+    }
+
+    function onFaceLost() {
+      if (appState === 'idle' && currentMood === 'neutral') {
+        setMood('confused');
+        setTimeout(() => {
+          if (appState === 'idle' && currentMood === 'confused') setMood('neutral');
+        }, 2000);
+      }
+    }
+
+    initFaceApi();
+
+    // Touch: the robot looks at your finger, then smiles at you
+    head.addEventListener('pointerdown', (e) => {
+      const r = head.getBoundingClientRect();
+      gazeTX = clamp(((e.clientX - r.left) / r.width - 0.5) * 30, -15, 15);
+      gazeTY = clamp(((e.clientY - r.top) / r.height - 0.5) * 24, -12, 12);
+      if (appState === 'sleeping') setState('listening');
+      if (appState === 'idle') {
+        setMood('happy');
+        setTimeout(() => {
+          if (appState === 'idle' && currentMood === 'happy') setMood('neutral');
+        }, 1800);
+      }
+    });
+
+    /* ══════════════════════════════════════════════════════════════
+       6. AUDIO PLAYBACK (server responses + acknowledgements)
+       ══════════════════════════════════════════════════════════════ */
+
+    const ACK_SOUNDS = [
+      'static/audio/hold.wav', 'static/audio/hang.wav', 'static/audio/gotit.wav',
+      'static/audio/gothca.wav', 'static/audio/just_a_sec.wav', 'static/audio/just_a_tick.wav',
+      'static/audio/kay.wav', 'static/audio/lemmy_see.wav', 'static/audio/ok.wav',
+      'static/audio/on_it.wav', 'static/audio/one_moment.wav', 'static/audio/one_moment_please.wav',
+      'static/audio/right_oh.wav', 'static/audio/right.wav', 'static/audio/sure.wav',
+      'static/audio/yeah.wav', 'static/audio/yup.wav', 'static/audio/yep.wav'
+    ];
+
+    ACK_SOUNDS.forEach(src => {
+      const a = new Audio();
+      a.src = src;
+      a.preload = 'auto';
+    });
+
+    let currentAudio = null;
+
+    /* Pick a face from what the robot is about to say */
+    function moodFromText(text) {
+      if (!text) return 'happy';
+      const s = text.toLowerCase();
+      if (/\b(sorry|sad|unfortunately|afraid|can't|cannot|won't|failed|error)\b/.test(s)) return 'sad';
+      if (/\b(no|never|stop|angry|annoying|stupid|don't do)\b/.test(s)) return 'angry';
+      if (/\b(hmm|not sure|i think|maybe|perhaps|confus|unclear)\b/.test(s)) return 'thinking';
+      if (/!|wow|amazing|awesome|great|excellent|perfect|love|yay|congrat/.test(s)) return 'excited';
+      if (/\b(hi|hello|hey|good morning|good evening|welcome|nice to meet)\b/.test(s)) return 'happy';
+      if (/\?$/.test(s.trim())) return 'attentive';
+      return 'happy';
+    }
+
+    function playSound(url, text) {
+      if (currentAudio) {
+        const old = currentAudio;
+        currentAudio = null;
+        try { old.pause(); } catch (e) {}
+      }
+
+      const audio = new Audio(url);
+      currentAudio = audio;
+
+      audio.addEventListener('play', () => {
+        if (audio !== currentAudio) return;
+        setState('speaking');
+        setMood(moodFromText(text));
+      }, { once: true });
+
+      const finish = () => {
+        if (audio !== currentAudio) return;
+        if (appState === 'speaking') setState('idle');
+      };
+      audio.addEventListener('ended', finish);
+      audio.addEventListener('error', finish);
+
+      audio.play().catch(e => {
+        console.warn('[Audio] Playback prevented:', e);
+        finish();
+      });
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       6.5 LOONA BRAIN — native bridge, STT turns, Hermes, phone actions
+       ══════════════════════════════════════════════════════════════ */
+
+    // Wake path: 'both' = envelope detector + native speech loop,
+    // 'speech' = speech recognizer only, 'envelope' = old behaviour.
+    const WAKE_MODE = 'both';
+
+    // ── bridge plumbing (window.PalBridge injected by MainActivity) ──
+    const Bridge = (() => {
+      let seq = 1;
+      const pending = new Map();
+      const handlers = {};
+
+      window.__palResult = (id, ok, json) => {
+        const p = pending.get(id); if (!p) return;
+        pending.delete(id);
+        let data = {};
+        try { data = JSON.parse(json); } catch (e) { /* keep {} */ }
+        if (ok) p.resolve(data); else p.reject(data);
+      };
+      window.__palEvent = (name, json) => {
+        let d = {};
+        try { d = (json && typeof json === 'object') ? json : JSON.parse(json); }
+        catch (e) { console.warn('[Bridge] bad event payload for ' + name, json); }
+        (handlers[name] || []).forEach(f => { try { f(d); } catch (e) { console.error('[Bridge] handler error', e); } });
+      };
+
+      function call(method, payload, timeoutMs) {
+        return new Promise((resolve, reject) => {
+          if (!window.PalBridge) { reject({ error: 'native bridge unavailable' }); return; }
+          const id = seq++;
+          pending.set(id, { resolve, reject });
+          try {
+            window.PalBridge.call(id, method, JSON.stringify(payload || {}));
+          } catch (e) { pending.delete(id); reject({ error: String(e) }); return; }
+          setTimeout(() => {
+            if (pending.has(id)) { pending.delete(id); reject({ error: 'bridge timeout: ' + method }); }
+          }, timeoutMs || 20000);
+        });
+      }
+
+      return {
+        call,
+        on: (n, f) => { (handlers[n] = handlers[n] || []).push(f); },
+        has: () => !!window.PalBridge
+      };
+    })();
+
+    // ── captions ──
+    function showTranscript(text) {
+      if (!transcriptEl) return;
+      transcriptEl.textContent = text ? '“' + text + '”' : '';
+      transcriptEl.classList.toggle('visible', !!text);
+    }
+    let replyHideTimer = null;
+    function showReply(text) {
+      if (!replyEl) return;
+      replyEl.textContent = text || '';
+      replyEl.classList.toggle('visible', !!text);
+      clearTimeout(replyHideTimer);
+      if (text) replyHideTimer = setTimeout(() => replyEl.classList.remove('visible'), 10000);
+    }
+
+    // The agent's reasoning, shown live while it thinks
+    const thinkingEl = document.getElementById('thinking');
+    function showThinking(text) {
+      if (!thinkingEl) return;
+      const t = String(text || '');
+      thinkingEl.textContent = t ? t.slice(-240) : '';
+      thinkingEl.classList.toggle('visible', !!t);
+    }
+
+    // ── Hermes config (localStorage override → defaults) ──
+    function hermesCfg() {
+      let stored = {};
+      try { stored = JSON.parse(localStorage.getItem('pal.hermes') || '{}'); } catch (e) { /* ignore */ }
+      return Object.assign({
+        // Configure your Hermes URL in settings (Settings › Hermes). Empty = not configured.
+        url: '',
+        key: '',
+        model: 'hermes-agent',
+        pathPrefix: '/p/loona-fast/',
+        keyFast: '',
+        modelFast: 'hermes-agent'
+      }, stored, window.HERMES || {});
+    }
+    window.setHermesKey = function (key) {
+      const cfg = hermesCfg(); cfg.key = key;
+      localStorage.setItem('pal.hermes', JSON.stringify(cfg));
+      console.log('[Hermes] key saved (' + key.length + ' chars)');
+    };
+
+    // ── brain config sheet: hold the bottom-left corner for a second ──
+    const cfgPanel = document.getElementById('config-panel');
+    const cfgUrl = document.getElementById('cfg-url');
+    const cfgKey = document.getElementById('cfg-key');
+    const cfgModel = document.getElementById('cfg-model');
+    const cfgPath = document.getElementById('cfg-path');
+    const cfgKeyFast = document.getElementById('cfg-key-fast');
+    const cfgModelFast = document.getElementById('cfg-model-fast');
+    const cfgProfileVal = document.getElementById('cfg-profile-val');
+    const cfgHint = document.getElementById('cfg-hint');
+
+    function openConfig() {
+      const c = hermesCfg();
+      cfgUrl.value = c.url;
+      cfgKey.value = c.key;
+      cfgModel.value = c.model;
+      cfgPath.value = c.pathPrefix || '';
+      cfgKeyFast.value = c.keyFast || '';
+      cfgModelFast.value = c.modelFast || '';
+      cfgProfileVal.textContent = activeHermesProfile;
+      const v = voiceCfg();
+      document.getElementById('cfg-lang').value = v.lang;
+      document.getElementById('cfg-ond').checked = !!v.onDevice;
+      document.getElementById('cfg-whisper').value = v.whisper || '';
+      document.getElementById('cfg-whisper-on').checked = v.whisperOn !== false;
+      cfgHint.textContent = 'Hold the bottom-left corner for a second to reopen.';
+      const panelEl = document.getElementById('cfg-panel');
+      if (isNative()) {
+        Bridge.call('panel', {}, 4000)
+          .then(r => { panelEl.textContent = r && r.url ? 'Web panel: ' + r.url : 'Web panel: off'; })
+          .catch(() => { panelEl.textContent = 'Web panel: off'; });
+      } else {
+        panelEl.textContent = 'Web panel: —';
+      }
+      cfgPanel.classList.add('open');
+      Bridge.call('stopListen', {}, 3000).catch(() => {});
+    }
+    function closeConfig() {
+      cfgPanel.classList.remove('open');
+      voiceResume();
+    }
+    window.openConfig = openConfig;
+
+    document.getElementById('cfg-save').addEventListener('click', () => {
+      const cfg = {
+        url: (cfgUrl.value || '').trim() || PALBrain.DEFAULT_CONFIG.url,
+        key: (cfgKey.value || '').trim(),
+        model: (cfgModel.value || '').trim() || PALBrain.DEFAULT_CONFIG.model,
+        pathPrefix: (cfgPath.value || '').trim() || PALBrain.DEFAULT_CONFIG.pathPrefix,
+        keyFast: (cfgKeyFast.value || '').trim(),
+        modelFast: (cfgModelFast.value || '').trim() || PALBrain.DEFAULT_CONFIG.modelFast
+      };
+      localStorage.setItem('pal.hermes', JSON.stringify(cfg));
+      applyVoiceConfig();
+      cfgHint.textContent = 'Checking ' + cfg.url + ' …';
+      Bridge.call('http', {
+        url: cfg.url.replace(/\/+$/, '') + (cfg.pathPrefix || '').replace(/\/+$/, '') + '/v1/models',
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (cfg.pathPrefix && cfg.keyFast ? cfg.keyFast : cfg.key) }
+      }, 9000).then(r => {
+        cfgHint.textContent = (r.status >= 200 && r.status < 300)
+          ? 'Connected — ' + cfg.model + ' is ready.'
+          : 'Server answered ' + r.status + '. Check the key.';
+      }).catch(e => {
+        cfgHint.textContent = 'Cannot reach ' + cfg.url + (e && e.error ? ' (' + e.error + ')' : '');
+      });
+    });
+    document.getElementById('cfg-close').addEventListener('click', closeConfig);
+
+    const hotspot = document.getElementById('config-hotspot');
+    let holdTimer = null;
+    hotspot.addEventListener('pointerdown', () => {
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(openConfig, 900);
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev =>
+      hotspot.addEventListener(ev, () => clearTimeout(holdTimer)));
+
+    function voiceResume() {
+      if (appState === 'idle' || appState === 'sleeping') startWakeLoop();
+    }
+
+    // Push the language / privacy choice to the native side and re-arm.
+    function applyVoiceConfig() {
+      const v = voiceCfg();
+      document.getElementById('cfg-lang').value = v.lang;
+      document.getElementById('cfg-ond').checked = !!v.onDevice;
+      document.getElementById('cfg-whisper').value = v.whisper || '';
+      document.getElementById('cfg-whisper-on').checked = v.whisperOn !== false;
+      if (!isNative()) return;
+      Bridge.call('voice', v, 8000)
+        .then(r => console.log('[Voice] ' + JSON.stringify(r)))
+        .catch(e => console.warn('[Voice] config failed:', e));
+    }
+
+    document.getElementById('cfg-lang').addEventListener('change', () => {
+      const v = voiceCfg(); v.lang = document.getElementById('cfg-lang').value;
+      localStorage.setItem('pal.voice', JSON.stringify(v));
+      applyVoiceConfig();
+      cfgHint.textContent = 'Γλώσσα: ' + v.lang;
+      startWakeLoop();
+    });
+    document.getElementById('cfg-ond').addEventListener('change', () => {
+      const v = voiceCfg(); v.onDevice = document.getElementById('cfg-ond').checked;
+      localStorage.setItem('pal.voice', JSON.stringify(v));
+      applyVoiceConfig();
+    });
+    document.getElementById('cfg-whisper').addEventListener('change', () => {
+      const v = voiceCfg();
+      v.whisper = (document.getElementById('cfg-whisper').value || '').trim();
+      localStorage.setItem('pal.voice', JSON.stringify(v));
+      applyVoiceConfig();
+      cfgHint.textContent = 'Whisper: ' + (v.whisper || 'off');
+    });
+    document.getElementById('cfg-whisper-on').addEventListener('change', () => {
+      const v = voiceCfg(); v.whisperOn = document.getElementById('cfg-whisper-on').checked;
+      localStorage.setItem('pal.voice', JSON.stringify(v));
+      applyVoiceConfig();
+    });
+
+    // Native feedback about voices (missing Greek TTS data, on-device fallback)
+    Bridge.on('voice', (ev) => {
+      console.log('[Voice] event ' + JSON.stringify(ev));
+      if (ev.type === 'tts-locale' && ev.ok === false) {
+        showCard('settings',
+          tr('Λείπει η ελληνική φωνή. Πάτησέ με για να την κατεβάσεις.',
+             'The Greek voice is missing. Tap here to install it.'),
+          'err',
+          () => Bridge.call('settings', { panel: 'tts' }, 4000).catch(() => {}));
+      }
+      if (ev.type === 'stt-fallback' && voiceCfg().whisperOn === false) {
+        showCard('settings',
+          tr('Μιλάς στο Google — δεν υπάρχει ελληνικό μοντέλο στη συσκευή. Πάτησέ με για offline.',
+             'Speech goes to Google — no on-device Greek model. Tap to enable offline.'),
+          undefined,
+          () => Bridge.call('settings', { panel: 'voiceinput' }, 4000).catch(() => {}));
+      }
+    });
+
+    // ── voice configuration (language + privacy) ──
+    function voiceCfg() {
+      let stored = {};
+      try { stored = JSON.parse(localStorage.getItem('pal.voice') || '{}'); } catch (e) { /* ignore */ }
+      return Object.assign({
+        lang: 'el-GR',
+        onDevice: true,
+        whisper: '',
+        whisperOn: true,
+        // whisper endpointing (configurable; measured per turn via [Lat] logs)
+        whisperNoSpeechMs: 2000,   // give up if no speech within this long
+        whisperEndMs: 450,         // end-of-speech silence to stop recording
+        whisperTimeoutMs: 8000,    // max time to wait for a whisper transcript
+        // whisper = accurate Greek, ~2.5 s after you stop speaking
+        // google  = ~0.5 s, but weaker at Greek names and numbers
+        stt: 'whisper'
+      }, stored, window.PAL_VOICE || {});
+    }
+    const voiceLang = () => String(voiceCfg().lang || 'en-US');
+    const isGreek = () => voiceLang().toLowerCase().startsWith('el');
+    const tr = (el, en) => (isGreek() ? el : en);
+
+    /* ── look & behaviour settings (also editable from the web panel) ── */
+    function uiCfg() {
+      let stored = {};
+      try { stored = JSON.parse(localStorage.getItem('pal.ui') || '{}'); } catch (e) { /* ignore */ }
+      return Object.assign({
+        wake: true,       // listen for the wake word
+        chime: true,      // acknowledgement sound on wake
+        rate: 1,          // speech rate
+        pitch: 1,         // speech pitch
+        face: 1,          // face zoom
+        clock: true,      // clock in the corner
+        keepAwake: true,  // keep the screen on
+        dimMin: 0,        // dim after N idle minutes (0 = never)
+        kiosk: true,      // hide system bars, back does nothing
+        timeout: 12,      // seconds to wait for a command after the wake word
+        confirmLevel: 'destructive'  // none | destructive (default) | all
+      }, stored);
+    }
+
+    let wakeEnabled = true;
+    let dimmed = false;
+    let dimTimer = null;
+
+    function updateClock() {
+      const el = document.getElementById('clock-chip');
+      if (!el) return;
+      if (!uiCfg().clock) { el.classList.remove('on'); return; }
+      const d = new Date();
+      el.textContent = d.toLocaleTimeString(isGreek() ? 'el-GR' : 'en-US',
+        { hour: '2-digit', minute: '2-digit' });
+      el.classList.add('on');
+    }
+
+    function applyUi() {
+      const u = uiCfg();
+      const head = document.getElementById('head');
+      if (head) head.style.zoom = String(u.face || 1);
+      wakeEnabled = u.wake !== false;
+      updateClock();
+      if (isNative()) {
+        Bridge.call('voice', { rate: u.rate, pitch: u.pitch }, 8000).catch(() => {});
+        Bridge.call('display', { keepAwake: u.keepAwake !== false, locked: u.kiosk !== false }, 8000)
+          .catch(() => {});
+      }
+      if (!wakeEnabled) {
+        stopWakeLoop();
+        if (appState !== 'speaking') setState('sleeping');
+      } else if (appState === 'sleeping') {
+        setState('idle');
+      }
+      scheduleDim();
+    }
+    window.applyUi = applyUi;
+
+    // Screen dimming: purely a window-brightness override, undoable instantly.
+    function scheduleDim() {
+      clearTimeout(dimTimer);
+      if (dimmed) {
+        dimmed = false;
+        if (isNative()) Bridge.call('display', { dim: -1 }, 4000).catch(() => {});
+      }
+      const u = uiCfg();
+      if (!u.dimMin || !isNative()) return;
+      dimTimer = setTimeout(() => {
+        if (appState !== 'idle' && appState !== 'sleeping') return;
+        dimmed = true;
+        Bridge.call('display', { dim: 0.04 }, 5000).catch(() => {});
+      }, u.dimMin * 60000);
+    }
+    setInterval(updateClock, 20000);
+
+    // ── action preview card ──
+    const cardEl = document.getElementById('action-card');
+    let cardTimer = null;
+    const ACTION_ICON = {
+      reminder: '⏰', alarm: '⏱', timer: '⏲', torch: '🔦', brightness: '🔆',
+      volume: '🔊', openApp: '📱', settings: '⚙️', battery: '🔋',
+      dial: '📞', search: '🔎', youtube: '▶️', navigate: '🧭',
+      url: '🌐', media: '🎵', notify: '📌', cancel: '🚫', time: '🕒', date: '📅'
+    };
+    const ACTION_LABEL = {
+      reminder: ['Υπενθύμιση', 'Reminder'], alarm: ['Ξυπνητήρι', 'Alarm'],
+      timer: ['Χρονόμετρο', 'Timer'], torch: ['Φακός', 'Flashlight'],
+      brightness: ['Φωτεινότητα', 'Brightness'], volume: ['Ένταση', 'Volume'],
+      openApp: ['Εφαρμογή', 'App'], settings: ['Ρυθμίσεις', 'Settings'],
+      battery: ['Μπαταρία', 'Battery'], dial: ['Κλήση', 'Call'],
+      search: ['Αναζήτηση', 'Search'], youtube: ['YouTube', 'YouTube'],
+      navigate: ['Πλοήγηση', 'Directions'], url: ['Σελίδα', 'Web page'],
+      media: ['Μουσική', 'Media'], notify: ['Σημείωση', 'Note'],
+      cancel: ['Ακύρωση', 'Cancel'], time: ['Ώρα', 'Time'], date: ['Ημερομηνία', 'Date']
+    };
+
+    let cardAction = null;
+    function showCard(type, detail, tone, action) {
+      if (!cardEl) return;
+      const label = ACTION_LABEL[type] ? tr(ACTION_LABEL[type][0], ACTION_LABEL[type][1]) : tr('Ενέργεια', 'Action');
+      cardEl.querySelector('.ic').textContent = ACTION_ICON[type] || '•';
+      cardEl.querySelector('.t').textContent = label;
+      cardEl.querySelector('.d').textContent = detail || '';
+      cardEl.classList.toggle('err', tone === 'err');
+      cardEl.classList.add('visible');
+      cardAction = action || null;
+      cardEl.style.pointerEvents = cardAction ? 'auto' : 'none';
+      clearTimeout(cardTimer);
+      cardTimer = setTimeout(() => {
+        cardEl.classList.remove('visible');
+        cardAction = null;
+        cardEl.style.pointerEvents = 'none';
+      }, action ? 20000 : 9000);
+    }
+
+    if (cardEl) cardEl.addEventListener('click', () => {
+      const a = cardAction;
+      cardAction = null;
+      cardEl.style.pointerEvents = 'none';
+      cardEl.classList.remove('visible');
+      if (a) a();
+    });
+
+    // ── turn controller ──
+    let pendingWhen = null;    // {kind, partial} while asking "when?"
+    let turnActive = false;
+    let wakeFired = false;
+    let hermesHistory = [];
+    let activeHermesProfile = 'root';   // 'fast' | 'root' — which Hermes profile served the last turn
+    let wakeFiredAt = 0;                // timestamp when the wake word fired
+    let lastHermesLatency = null;       // ms of the last completed Hermes turn
+
+    function startTurn(tail) {
+      console.log('[Turn] start' + (tail ? ' tail="' + tail + '"' : ''));
+      turnActive = true;
+      showTranscript('');
+      stopWakeLoop();
+      if (tail && tail.trim()) {           // "loona put a reminder" in one breath
+        setTimeout(() => handleUtterance(tail.trim()), 400);
+        return;
+      }
+      showTranscript('…');
+      // Whisper on the LAN hears Greek far better than the Google recognizer,
+      // and the audio never leaves the house. Fall back to Google if it is
+      // unreachable or hears nothing.
+      const vc = voiceCfg();
+      if (isNative() && vc.whisperOn !== false && vc.stt !== 'google') {
+        sttPending = true;
+        Bridge.call('listen', {
+          mode: 'whisper',
+          noSpeechMs: vc.whisperNoSpeechMs,
+          endMs: vc.whisperEndMs
+        }, vc.whisperTimeoutMs)
+          .then(() => console.log('[STT] whisper listening'))
+          .catch(e => { console.warn('[STT] whisper unavailable:', e); sttPending = false; googleListen(); });
+        return;
+      }
+      googleListen();
+    }
+
+    function googleListen() {
+      if (!turnActive || appState === 'speaking') return;
+      // "conversation" keeps the recognizer re-arming, so a follow-up sentence
+      // or a "…when?" answer doesn't need a second wake word.
+      Bridge.call('listen', { mode: 'conversation' }, 10000)
+        .then(() => console.log('[STT] google listening'))
+        .catch(e => console.warn('[STT] listen failed:', e));
+    }
+
+    function endTurn() {
+      console.log('[Turn] end (active=' + turnActive + ', pending=' + !!pendingWhen + ', sttPending=' + sttPending + ')');
+      if (!turnActive && !pendingWhen) { startWakeLoop(); return; }
+      turnActive = false;
+      pendingWhen = null;
+      showTranscript('');
+      wakeFired = false;
+      startWakeLoop();
+    }
+
+    function handleUtterance(text) {
+      text = String(text || '').trim();
+      if (!text) return;
+      showTranscript(text);
+      noteActivity();
+
+      // Completing a "…when?" exchange
+      if (pendingWhen) {
+        const at = PALBrain.parseWhen(text, Date.now()) ||
+                   PALBrain.parseWhenGr(text, Date.now());
+        if (at) {
+          const action = Object.assign({}, pendingWhen.partial,
+            { type: pendingWhen.kind, atMs: at });
+          pendingWhen = null;
+          executeLocal(action);
+          return;
+        }
+        pendingWhen = null;              // not a time — treat as a fresh utterance
+      }
+
+      let action = null;
+      try { action = PALBrain.parseIntent(text, Date.now()); }
+      catch (e) { console.error('[Brain] parse error', e); }
+
+      if (action) { executeLocal(action); return; }
+      askHermes(text);
+    }
+
+    function executeLocal(action, opts) {
+      const silent = !!(opts && opts.silent);
+      const confirmed = !!(opts && opts.confirmed);
+      if (action.needWhen) {
+        pendingWhen = { kind: action.type, partial: action.partial || {} };
+        speakLine(PALBrain.askWhenText(action.type, voiceLang()));
+        return;
+      }
+
+      // Risk-based confirmation: destructive actions need a yes/no tap unless
+      // confirmLevel is 'none' (or already confirmed).
+      const DESTRUCTIVE = new Set(['reminder', 'alarm', 'timer', 'cancel']);
+      const level = uiCfg().confirmLevel;
+      const needsConfirm = DESTRUCTIVE.has(action.type) && level !== 'none' && !confirmed;
+      if (needsConfirm) {
+        const trEl = PALBrain.confirmText(action, Date.now(), voiceLang());
+        showCard(action.type, trEl.replace(/\.$/, '') + '?', 'warn', () => {
+          executeLocal(action, { silent, confirmed: true });
+        });
+        return;
+      }
+
+      let call = null;
+      switch (action.type) {
+        case 'reminder':   call = Bridge.call('reminder', { title: action.title, message: action.message, atMs: action.atMs }, 15000); break;
+        case 'alarm':      call = Bridge.call('alarm', { title: action.label, message: action.label, atMs: action.atMs }, 15000); break;
+        case 'timer':      call = Bridge.call('timer', { title: action.label, message: action.label, ms: action.ms }, 15000); break;
+        case 'cancel':     call = Bridge.call('cancel', { kind: action.all ? 'all' : action.kind }, 10000); break;
+        case 'torch':      call = Bridge.call('torch', { on: action.on }); break;
+        case 'brightness': call = Bridge.call('brightness', { value: action.value, op: action.op }); break;
+        case 'volume':     call = Bridge.call('volume', { value: action.value, op: action.op, stream: action.stream }); break;
+        case 'openApp':    call = Bridge.call('openApp', { query: action.query }); break;
+        case 'settings':   call = Bridge.call('settings', { panel: action.panel }); break;
+        case 'battery':    call = Bridge.call('battery', {}); break;
+        case 'dial':       call = Bridge.call('dial', { number: action.number, contact: action.contact }); break;
+        case 'search':     call = Bridge.call('search', { query: action.query }); break;
+        case 'youtube':    call = Bridge.call('youtube', { query: action.query }); break;
+        case 'navigate':   call = Bridge.call('navigate', { query: action.query }); break;
+        case 'url':        call = Bridge.call('url', { url: action.url }); break;
+        case 'media':      call = Bridge.call('media', { op: action.op }); break;
+        // No voice API into the music apps, so: open YT Music, then resume.
+        case 'music':      call = Bridge.call('openApp', { query: 'YT Music' })
+            .then(() => new Promise(r => setTimeout(r, 2800)))
+            .then(() => Bridge.call('media', { op: 'play' }))
+            .then(() => new Promise(r => setTimeout(r, 1200)))
+            .then(() => Bridge.call('media', { op: 'play' })); break;
+        case 'notify':     call = Bridge.call('notify', { title: action.title, message: action.title }); break;
+        default: break;
+      }
+
+      // Preview exactly what was understood, before anything is executed.
+      showCard(action.type, PALBrain.confirmText(action, Date.now(), voiceLang()));
+
+      if (!call) {
+        if (!silent) speakLine(PALBrain.confirmText(action, Date.now(), voiceLang()));
+        else endTurn();
+        return;
+      }
+      call.then(res => {
+        let line;
+        if (action.type === 'battery') {
+          line = res.percent >= 0
+            ? tr(`Η μπαταρία είναι ${res.percent} τοις εκατό${res.charging ? ', φορτίζει' : ''}.`,
+                 `Battery is ${res.percent} percent${res.charging ? ', charging' : ''}.`)
+            : PALBrain.confirmText(action, Date.now(), voiceLang());
+        } else if (action.type === 'cancel') {
+          line = res.cancelled
+            ? PALBrain.confirmText(action, Date.now(), voiceLang())
+            : tr('Δεν υπήρχε κάτι να ακυρώσω.', 'There was nothing to cancel.');
+        } else {
+          line = PALBrain.confirmText(action, Date.now(), voiceLang());
+        }
+        if (action.type === 'reminder' || action.type === 'alarm' || action.type === 'timer') {
+          if (res && res.notificationsEnabled === false) {
+            line += tr(' Οι ειδοποιήσεις είναι κλειστές — άνοιξέ τες για να το δεις.',
+                       ' Notifications are off, so turn them on for this app.');
+          }
+        }
+        showCard(action.type, line, 'ok');
+        if (silent) { console.log('[Action] ' + action.type + ' → ' + line); endTurn(); }
+        else speakLine(line);
+      }).catch(err => {
+        console.warn('[Action] failed:', action.type, err);
+        const msg = tr('Δεν τα κατάφερα', "I couldn't do that") +
+          (err && err.error ? ' — ' + err.error : '.');
+        showCard(action.type, msg, 'err');
+        speakLine(msg);
+      });
+    }
+
+    // Streaming sink: PalBridge pushes each token as a `hermes` event.
+    let streamSink = null;
+    Bridge.on('hermes', (ev) => {
+      if (!streamSink || !ev) return;
+      try { streamSink(ev); } catch (e) { /* ignore */ }
+    });
+
+    async function askHermes(text) {
+      setState('thinking');
+      const turnStartAt = performance.now();
+      if (wakeFiredAt) {
+        console.log('[Lat] wake→transcript ' + Math.round(turnStartAt - wakeFiredAt) + 'ms');
+        wakeFiredAt = 0;
+      }
+      hermesHistory.push({ role: 'user', text: text });
+      if (hermesHistory.length > 24) hermesHistory = hermesHistory.slice(-24);
+
+      const cfg = hermesCfg();
+      const req = PALBrain.buildRequest(cfg, hermesHistory, { stream: true });
+      console.log('[Hermes] → ' + req.url + (req.headers.Authorization.length > 14 ? ' (with key)' : ' (NO KEY)'));
+
+      const t0 = performance.now();
+      let firstTokenAt = 0, firstSpeechAt = 0;
+      let think = '', answer = '', spokeLen = 0, spokeAny = false;
+
+      // Speak complete sentences as they arrive. The first one starts talking
+      // in about a second instead of waiting for the whole answer.
+      const say = (final) => {
+        const safe = answer.split('@@ACTION')[0];
+        const cut = final ? safe.length : sentenceCut(safe);
+        if (cut <= spokeLen) return;
+        const chunk = safe.slice(spokeLen, cut).trim();
+        if (!chunk) { spokeLen = cut; return; }
+        if (!final && chunk.length < 12) return;      // too short to be a sentence
+        spokeLen = cut;
+        if (!spokeAny) {
+          showReply(safe);
+          setState('speaking');
+          setMood(moodFromText(chunk));
+          stopWakeLoop();
+          wakeLoopOn = false;
+          ttsPending = 0;
+          firstSpeechAt = performance.now();
+          console.log('[Lat] speech started ' + Math.round(firstSpeechAt - t0) + 'ms after request');
+        }
+        speakChunk(chunk, !spokeAny);
+        spokeAny = true;
+        showReply(safe);
+      };
+
+      streamSink = (ev) => {
+        if (ev.kind === 'reasoning') {
+          think += ev.delta || '';
+          showThinking(think);
+        } else if (ev.kind === 'content') {
+          answer += ev.delta || '';
+          if (!firstTokenAt && answer.trim()) {
+            firstTokenAt = performance.now();
+            console.log('[Lat] first token ' + Math.round(firstTokenAt - t0) + 'ms');
+          }
+          if (answer.trim()) { showThinking(''); showReply(answer); }
+          say(false);
+        }
+      };
+
+      // Try fast profile first, root as fallback. Max two attempts total.
+      // Never logs or surfaces API keys.
+      let res = null;
+      activeHermesProfile = 'root';
+
+      for (let attempt = 0; attempt < 2 && !res; attempt++) {
+        const useFast = attempt === 0 && cfg.pathPrefix;
+        const attemptCfg = useFast ? cfg : Object.assign({}, cfg, { pathPrefix: '', keyFast: undefined });
+        activeHermesProfile = useFast ? 'fast' : 'root';
+        const r = PALBrain.buildRequest(attemptCfg, hermesHistory, { stream: true });
+        console.log('[Hermes] → ' + r.url + (r.headers.Authorization.length > 14 ? ' (with key)' : ' (NO KEY)'));
+
+        // 1. Try streaming.
+        let s = null;
+        try {
+          s = await Bridge.call('stream', { url: r.url, headers: r.headers, body: r.body }, 125000);
+        } catch (e) {
+          /* stream threw — try http below */
+        }
+        // Stream may resolve with status 0 on connection error → try http.
+        if (!s || s.status === 0) {
+          try {
+            const plain = PALBrain.buildRequest(attemptCfg, hermesHistory, { stream: false });
+            const raw = await Bridge.call('http', { url: plain.url, method: 'POST', headers: plain.headers, body: plain.body }, 95000);
+            s = { status: raw.status, text: '', body: raw.body, reasoning: '' };
+          } catch (e2) {
+            if (useFast) continue;            // try root on next iteration
+            streamSink = null; showThinking('');
+            speakLine("I can't reach my brain right now — is Hermes running on the NUC?");
+            return;
+          }
+        }
+
+        // Auth errors: fall back to root if we're on fast; otherwise surface.
+        if (s.status === 401 || s.status === 403) {
+          if (useFast) { console.warn('[Hermes] fast failed → root fallback'); continue; }
+          showThinking('');
+          const r2 = PALBrain.parseReply(s.status, s.body || '');
+          speakLine(r2.text);
+          return;
+        }
+
+        res = s;
+        lastHermesLatency = Math.round(performance.now() - t0);
+        console.log('[Lat] turn total ' + lastHermesLatency + 'ms (profile=' + activeHermesProfile + ')');
+      }
+
+      if (!res) {
+        streamSink = null; showThinking('');
+        speakLine("I can't reach my brain right now — is Hermes running on the NUC?");
+        return;
+      }
+      streamSink = null;
+
+      const status = res && res.status ? res.status : 0;
+      const full = ((res && res.text) || answer || '').trim();
+      const reasoning = ((res && res.reasoning) || think || '').trim();
+
+      if (status && (status < 200 || status > 299)) {
+        showThinking('');
+        const r = PALBrain.parseReply(status, (res && res.body) || '');
+        speakLine(r.text);
+        return;
+      }
+      if (!full) {
+        showThinking('');
+        speakLine(reasoning ? "I thought about it but didn't land on an answer."
+          : "I couldn't reach my brain right now — is Hermes running on the NUC?");
+        return;
+      }
+
+      // The model may end its reply with "@@ACTION {...}" to drive the phone.
+      const split = PALBrain.splitAction(full);
+      const spoken = split.text.trim();
+      if (spoken) hermesHistory.push({ role: 'assistant', text: spoken });
+
+      const action = split.action ? PALBrain.normalizeAction(split.action, Date.now()) : null;
+      showThinking('');
+
+      if (action) {
+        console.log('[Hermes] action ' + JSON.stringify(action));
+        // The action happens as soon as the sentence about it is out.
+        setTimeout(() => executeLocal(action, { silent: true }), spokeAny ? 120 : 0);
+        if (spokeAny) {
+          say(true);                     // flush whatever is left unsaid
+          if (!spoken) speakChunk(PALBrain.confirmText(action, Date.now(), voiceLang()), ttsPending === 0);
+        } else {
+          speakLine(spoken || PALBrain.confirmText(action, Date.now(), voiceLang()));
+        }
+        return;
+      }
+
+      if (spokeAny) { say(true); return; }
+      speakLine(spoken || 'Okay.');
+    }
+
+    // Caption + TTS + mood; the turn ends when TTS reports done.
+    function speakLine(text) {
+      showReply(text);
+      console.log('[Loona] ' + text);
+      if (!Bridge.has()) {
+        setState('speaking');
+        setMood(moodFromText(text));
+        const ms = Math.min(7000, 900 + text.length * 55);
+        setTimeout(() => { if (appState === 'speaking') setState('idle'); endTurn(); }, ms);
+        return;
+      }
+      setState('speaking');
+      setMood(moodFromText(text));
+      showThinking('');
+      // Close the mic before talking, or the robot transcribes itself.
+      // Clearing the flag matters: without it startWakeLoop() thinks the loop
+      // is still armed and the wake word never comes back a second time.
+      wakeLoopOn = false;
+      Bridge.call('stopListen', {}, 5000).catch(() => {});
+      ttsPending = 0;
+      speakChunk(text, true);
+    }
+
+    /* Streaming speech: the answer is spoken sentence by sentence while the
+       rest of it is still arriving, instead of after the model finishes. */
+    let ttsPending = 0;
+
+    function speakChunk(text, first) {
+      const t = String(text || '').trim();
+      if (!t) return;
+      ttsPending++;
+      Bridge.call('speak', { text: t, queue: first ? 'flush' : 'add' }, 180000)
+        .catch(e => {
+          console.warn('[TTS] chunk failed:', e);
+          ttsPending = Math.max(0, ttsPending - 1);
+          if (ttsPending === 0 && appState === 'speaking') setState('idle');
+        });
+    }
+
+    function sentenceCut(s) {
+      let cut = 0;
+      const re = /[.!?…;·\n]/g;
+      let m;
+      while ((m = re.exec(s)) !== null) cut = m.index + 1;
+      return cut;
+    }
+
+    // ── continuous wake loop (native speech path) ──
+    let wakeLoopOn = false;
+    // A whisper request is in flight: the answer arrives a beat after you stop
+    // talking, so the turn must not be torn down in the meantime.
+    let sttPending = false;
+    function startWakeLoop() {
+      if (!isNative() || WAKE_MODE === 'envelope') return;
+      if (wakeLoopOn || turnActive) return;
+      wakeFired = false;
+      if (!wakeEnabled) return;
+      if (appState !== 'idle' && appState !== 'sleeping') return;
+      Bridge.call('listen', { mode: 'loop' }, 10000)
+        .then(() => { wakeLoopOn = true; console.log('[WakeLoop] speech loop armed'); })
+        .catch(e => console.warn('[WakeLoop] start failed:', e));
+    }
+    function stopWakeLoop() {
+      if (!wakeLoopOn) { return; }
+      wakeLoopOn = false;
+      Bridge.call('stopListen', {}, 5000).catch(() => {});
+    }
+
+    // ── native events ──
+    Bridge.on('speech', (ev) => {
+      if (ev.type === 'final') console.log('[STT] heard: ' + ev.text);
+      if (ev.type === 'partial') {
+        if (turnActive) showTranscript(ev.text || '');
+        else if (!wakeFired) {
+          // Fire on a partial that already contains the wake token — this is
+          // much faster and more reliable than waiting for the recognizer's
+          // final, which often never arrives for a short Greek word.
+          const _sw = PALBrain.splitWake(ev.text || '');
+          if (_sw.wake) { wakeFired = true; onWakeWord('partial', _sw.rest); }
+        }
+        return;
+      }
+      if (!ev.type) return;
+      if (ev.type === 'final') {
+        sttPending = false;
+        sttHardErrors = 0;
+        envelopeFallback = false;                    // real words are back
+        if (appState === 'speaking') return;          // our own voice, ignore
+        if (turnActive && (appState === 'listening' || appState === 'waking' || appState === 'thinking')) {
+          handleUtterance(ev.text);
+          return;
+        }
+        if (!turnActive) {                       // wake loop running
+          const sw = PALBrain.splitWake(ev.text || '');
+          if (sw.wake) onWakeWord('speech', sw.rest);
+        }
+        return;
+      }
+      if (ev.type === 'empty') {
+        // Whisper heard nothing — let the phone's own recognizer try once.
+        sttPending = false;
+        if (turnActive) googleListen();
+        return;
+      }
+      if (ev.type === 'error') {
+        // 8 = whisper unreachable/failed → same fallback
+        if (ev.code === 8) {
+          sttPending = false;
+          if (turnActive) googleListen();
+          return;
+        }
+        // 6/7 = "nothing said" — normal while waiting for a wake word
+        if (ev.code === 7 || ev.code === 6) return;
+        // Only genuine engine failures count — ERROR_CLIENT (5) is a restart
+        // race, not a missing recognizer, and must not disable the wake word.
+        if (ev.code === 1 || ev.code === 2 || ev.code === 3) sttHardErrors++;
+        else if (ev.code === 5) sttHardErrors = 0;
+        if (sttHardErrors >= 4 && !envelopeFallback) {
+          envelopeFallback = true;
+          console.warn('[STT] failing — falling back to envelope wake detection');
+        }
+        console.warn('[STT] error', ev.code, ev.message);
+      }
+    });
+
+    // Voice levels from the native recognizer keep the face alive
+    Bridge.on('level', (ev) => { onNativeLevel(ev && ev.level); });
+
+    // A reminder/alarm that fired while the app is open
+    Bridge.on('alert', () => { showThinking(''); });
+
+    Bridge.on('tts', (ev) => {
+      if (ev.type === 'start') {
+        if (appState !== 'speaking') setState('speaking');
+        setMood(moodFromText(replyEl ? replyEl.textContent : ''));
+      }
+      if (ev.type === 'done' || ev.type === 'error') {
+        ttsPending = Math.max(0, ttsPending - 1);
+        // More sentences are still queued or being spoken.
+        if (ttsPending > 0) return;
+        if (sttPending) {
+          // Still transcribing what was said — don't close the turn on it.
+          if (appState === 'speaking') setState('listening');
+          return;
+        }
+        if (appState === 'speaking') setState('idle');
+        setTimeout(endTurn, 200);
+      }
+    });
+
+    Bridge.on('alert', (ev) => {
+      if (ev && ev.title) {
+        showReply(ev.kind === 'timer' ? '⏱ ' + ev.title : '🔔 ' + ev.title);
+        playLocalAck();
+        noteActivity();
+      }
+    });
+
+    // Surface native permissions/config once at boot
+    if (isNative()) {
+      applyVoiceConfig();          // language + on-device privacy for STT/TTS
+      applyUi();                   // face zoom, clock, kiosk, dimming, wake on/off
+      Bridge.call('status', {}, 8000).then(st => {
+        console.log('[Bridge] status ' + JSON.stringify(st));
+        if (st && st.notifications === false) console.warn('[Bridge] notifications disabled');
+        if (st && st.exactAlarms === false) console.warn('[Bridge] exact alarms not granted');
+        if (st && st.writeSettings === false) console.warn('[Bridge] write settings not granted');
+      }).catch(() => {});
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       7. SOCKET.IO (optional — the legacy port-5000 server. Down ⇒
+       Loona still works standalone through the native brain.)
+       ══════════════════════════════════════════════════════════════ */
+
+    const SERVER_URL = '';
+    let socket = null;
+
+    if (typeof io === 'function') {
+      try {
+        socket = io(SERVER_URL, { transports: ['websocket', 'polling'], reconnection: false });
+        window.socket = socket;
+      } catch (e) {
+        console.warn('[Socket] init failed, standalone mode:', e);
+        socket = null;
+      }
+    } else {
+      console.warn('[Socket] library missing, standalone mode');
+    }
+
+    if (socket) {
+    socket.on('connect', () => {
+      console.log('[Socket] Connected to', SERVER_URL);
+      if (appState === 'dead') { setState('idle'); setMood('neutral'); }
+      startMicStreamFromExisting();
+    });
+
+    socket.on('disconnect', () => {
+      console.log('[Socket] Disconnected — standalone mode');
+      stopMicStream();
+      // NOTE: no more setState('dead') — the native brain keeps Loona alive.
+    });
+
+    socket.on('play_ack', () => {
+      noteActivity();
+      setMood('excited');
+      setTimeout(() => {
+        if (appState === 'idle') setMood('neutral');
+        else if (appState === 'listening') setMood('attentive');
+      }, 1200);
+    });
+
+    socket.on('show_book', () => {
+      noteActivity();
+      if (appState === 'idle' || appState === 'listening') setState('thinking');
+    });
+
+    socket.on('play_audio', (data) => {
+      noteActivity();
+      if (data && data.url) playSound(SERVER_URL + data.url, data.text);
+    });
+
+    socket.on('wake_detected', () => onWakeWord('server'));
+    socket.on('start_listening', () => { noteActivity(); setState('listening'); });
+    socket.on('stop_listening', () => { if (appState === 'listening') setState('idle'); });
+    socket.on('thinking', () => setState('thinking'));
+    socket.on('speaking', () => setState('speaking'));
+    socket.on('done_speaking', () => { if (appState === 'speaking') setState('idle'); });
+
+    socket.on('request_capture', () => {
+      // Look into the camera for the photo, then smile about it
+      if (appState !== 'speaking') {
+        gazeTX = 0; gazeTY = 0;
+        setMood('attentive');
+      }
+      if (!video.videoWidth || !video.videoHeight) {
+        socket.emit('client_frame', { image: null });
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      socket.emit('client_frame', {
+        image: canvas.toDataURL('image/jpeg', 0.8).split(',')[1]
+      });
+    });
+    } // end if (socket)
+
+    /* ══════════════════════════════════════════════════════════════
+       8. MICROPHONE STREAMING TO THE SERVER
+       ══════════════════════════════════════════════════════════════ */
+
+    let mediaRecorder = null;
+
+    function startMicStreamFromExisting() {
+      if (mediaRecorder || !micStream || !socket) return;
+      try {
+        mediaRecorder = new MediaRecorder(micStream, { mimeType: 'audio/webm;codecs=opus' });
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0 && socket && socket.connected) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              socket.emit('client_audio', { audio: String(reader.result).split(',')[1] });
+            };
+            reader.readAsDataURL(e.data);
+          }
+        };
+        mediaRecorder.onerror = (e) => console.error('[Mic] Recorder error:', e);
+        mediaRecorder.start(250);
+        console.log('[Mic] Streaming to server');
+      } catch (err) {
+        console.error('[Mic] Recorder start failed:', err);
+        mediaRecorder = null;
+      }
+    }
+
+    function stopMicStream() {
+      if (mediaRecorder) {
+        try { mediaRecorder.stop(); } catch (e) {}
+        mediaRecorder = null;
+      }
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       9. UNLOCK — native app unlocks at boot, browser needs a gesture.
+       The native flag is injected in onPageStarted (BEFORE this script runs),
+       so the boot path is trustworthy. If the mic still refuses to start, say
+       so on the banner and allow a tap retry — silent failure was the old bug.
+       ══════════════════════════════════════════════════════════════ */
+
+    let unlocked = false;
+    const banner = document.getElementById('status-banner');
+
+    function isNative() { return window.isNativeApp === true; }
+
+    function showBanner(text) {
+      if (!banner) return;
+      banner.textContent = text;
+      banner.style.display = 'block';
+    }
+    function hideBanner() {
+      if (banner) banner.style.display = 'none';
+    }
+
+    async function attemptUnlock(reason) {
+      if (unlocked) return;
+      unlocked = true;
+      console.log('[Unlock] ' + reason);
+
+      await initAudio();                       // sets audioReady on success
+
+      if (audioReady && audioCtx && audioCtx.state === 'suspended') {
+        try { await audioCtx.resume(); } catch (e) { /* gesture needed */ }
+      }
+
+      // In the native app the recognizer holds the mic, so there is no
+      // WebAudio context to check — audioReady is the whole story.
+      const micOk = isNative()
+        ? audioReady
+        : (audioReady && audioCtx && audioCtx.state !== 'suspended');
+
+      if (!micOk) {
+        unlocked = false;                      // allow the next tap to retry
+        showBanner('Tap anywhere to enable the microphone');
+        console.warn('[Unlock] mic not ready (audioReady=' + audioReady +
+          ', ctx=' + (audioCtx ? audioCtx.state : 'none') + ')');
+        return;
+      }
+
+      hideBanner();
+      console.log('[Unlock] microphone ready' + (audioCtx ? ', state=' + audioCtx.state : ' (native)'));
+      if (!isNative() && document.body.requestFullscreen) {
+        document.body.requestFullscreen().catch(() => {});
+      }
+      if (isNative()) startWakeLoop();   // arm the speech wake path
+    }
+
+    if (isNative()) {
+      attemptUnlock('native boot');
+    } else {
+      // The WebView injects window.isNativeApp around page load; if it lands a
+      // hair after this script parses, catch it here instead of waiting for a tap.
+      let tries = 0;
+      const flagPoll = setInterval(() => {
+        if (isNative()) {
+          clearInterval(flagPoll);
+          attemptUnlock('native flag (late)');
+        } else if (++tries > 20) {
+          clearInterval(flagPoll);
+          showBanner('Tap anywhere to enable camera & microphone');
+        }
+      }, 100);
+    }
+
+    // Any tap is a valid unlock gesture (also the fallback for a failed boot).
+    document.addEventListener('click', () => {
+      const silent = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+      silent.play().catch(() => {});
+      attemptUnlock('tap');
+    });
+
+    // Keep the microphone alive if the WebView suspends the audio context
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+      if (!unlocked && isNative()) attemptUnlock('app resume');
+    });
+
+    requestAnimationFrame(faceFrame);
+  </script>
+</body>
+</html>
