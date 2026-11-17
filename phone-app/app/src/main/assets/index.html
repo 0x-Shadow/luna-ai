@@ -2188,18 +2188,34 @@
 
     // ── continuous wake loop (native speech path) ──
     let wakeLoopOn = false;
+    let wakeLoopRetries = 0;
+    const WAKE_LOOP_MAX_RETRIES = 5;
     // A whisper request is in flight: the answer arrives a beat after you stop
     // talking, so the turn must not be torn down in the meantime.
     let sttPending = false;
-    function startWakeLoop() {
+    function startWakeLoop(retry = false) {
       if (!isNative() || WAKE_MODE === 'envelope') return;
       if (wakeLoopOn || turnActive) return;
       wakeFired = false;
       if (!wakeEnabled) return;
       if (appState !== 'idle' && appState !== 'sleeping') return;
       Bridge.call('listen', { mode: 'loop' }, 10000)
-        .then(() => { wakeLoopOn = true; console.log('[WakeLoop] speech loop armed'); })
-        .catch(e => console.warn('[WakeLoop] start failed:', e));
+        .then(() => {
+          wakeLoopOn = true;
+          wakeLoopRetries = 0;
+          console.log('[WakeLoop] speech loop armed' + (retry ? ' (retry #' + wakeLoopRetries + ')' : ''));
+        })
+        .catch(e => {
+          console.warn('[WakeLoop] start failed:', e);
+          if (!retry && wakeLoopRetries < WAKE_LOOP_MAX_RETRIES) {
+            wakeLoopRetries++;
+            console.log('[WakeLoop] retrying in 2s (attempt ' + wakeLoopRetries + '/' + WAKE_LOOP_MAX_RETRIES + ')');
+            setTimeout(() => startWakeLoop(true), 2000);
+          } else {
+            console.warn('[WakeLoop] max retries reached — wake word unavailable until tap');
+            showBanner('Wake word unavailable — tap the screen to listen');
+          }
+        });
     }
     function stopWakeLoop() {
       if (!wakeLoopOn) { return; }
@@ -2259,6 +2275,12 @@
         if (sttHardErrors >= 4 && !envelopeFallback) {
           envelopeFallback = true;
           console.warn('[STT] failing — falling back to envelope wake detection');
+          // STT is broken: stop the broken loop and retry the wake loop once STT recovers.
+          if (wakeLoopOn) { stopWakeLoop(); }
+          if (wakeLoopRetries < WAKE_LOOP_MAX_RETRIES) {
+            wakeLoopRetries++;
+            setTimeout(() => startWakeLoop(true), 3000);
+          }
         }
         console.warn('[STT] error', ev.code, ev.message);
       }
