@@ -176,6 +176,18 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
                     method == "POST" && path == "/api/test" ->
                         respond(out, 200, "application/json", testTarget(body))
 
+                    method == "GET" && path == "/api/apps" ->
+                        respond(out, 200, "application/json", bridge.appsWithAccessJson())
+
+                    method == "POST" && path == "/api/app-access" -> {
+                        val req = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+                        val pkg = req.optString("pkg", "")
+                        val enabled = req.optBoolean("enabled", true)
+                        bridge.setAppAccessEnabled(pkg, enabled)
+                        respond(out, 200, "application/json", JSONObject()
+                            .put("ok", true).put("pkg", pkg).put("enabled", enabled).toString())
+                    }
+
                     method == "GET" && path == "/api/frame.jpg" -> {
                         // Single flight: grabbing a frame costs a WebView draw, so
                         // parallel requests just queue up and starve the socket.
@@ -294,6 +306,7 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
                 .put("loop", page.optBoolean("loop")))
             .put("battery", JSONObject(bridge.batterySnapshot()))
             .put("access", accessJson())
+            .put("apps", JSONObject(bridge.appsWithAccessJson()))
 
         if (!live) {
             json.put("offline", true)

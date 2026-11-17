@@ -202,6 +202,18 @@
   .perm .note{font-size:11.5px;color:var(--dimmer);margin-top:1px}
   .perm .act{margin-left:auto}
 
+  /* ── app access control ───────────────────────── */
+  .app-row{display:flex;align-items:center;gap:9px;padding:8px 10px;border-top:1px solid rgba(255,255,255,.05);border-radius:8px}
+  .app-row:first-of-type{border-top:none}
+  .app-info{display:flex;flex-direction:column;margin-left:auto}
+  .app-name{font-size:13px;color:var(--text)}
+  .app-pkg{font-size:10.5px;color:var(--dimmer);font-family:var(--mono)}
+  .switch-app{display:flex;align-items:center;gap:10px}
+  .switch-app input{position:absolute;opacity:0;width:0;height:0}
+  .switch-app input:checked + .track{background:rgba(102,224,255,.28);border-color:rgba(102,224,255,.55)}
+  .switch-app input:checked + .track::after{transform:translateX(16px);background:var(--cyan)}
+  .switch-app input:focus-visible + .track{box-shadow:0 0 0 3px rgba(102,224,255,.25)}
+
   /* ── tools ──────────────────────────────────────── */
   .tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:9px}
   .tool{
@@ -289,6 +301,7 @@
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
     <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M9.5 16.5h5"/></symbol>
+    <symbol id="i-app" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2" ry="3"/><line x1="9" y1="17" x2="9" y2="21"/><line x1="15" y1="17" x2="15" y2="21"/></symbol>
   </defs>
 </svg>
 
@@ -445,6 +458,21 @@
       <p style="margin:14px 0 0;color:var(--dimmer);font-size:11.5px">
         Loona lives on the phone — these buttons open the matching Android screen there.
       </p>
+
+      <div class="divider"></div>
+
+      <!-- 4b · app access control -->
+      <h2><svg><use href="#i-app"/></svg>Εφαρμογές<span class="aside">which apps she may open</span></h2>
+      <p style="margin:8px 0 10px;color:var(--dimmer);font-size:11.5px">
+        Choose which apps Loona is allowed to open by voice. Disabled apps still appear
+        on the phone, but she won't open them unless you re-enable them here.
+      </p>
+      <div id="app-list" style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--panel);border-radius:6px;font-size:12px;color:var(--dimmer)">
+          <strong>App</strong><span style="margin-left:auto;text-align:right;min-width:60px">Access</span>
+        </div>
+      </div>
+      <p id="app-hint" style="margin:8px 0 0;color:var(--dimmer);font-size:11.5px">Loading apps…</p>
 
       <div class="divider"></div>
 
@@ -669,7 +697,46 @@
     }
 
     paintPerms(s.permissions);
-  }
+
+    // apps access control
+    if (s.apps) {
+      var list = $('app-list');
+      var hint = $('app-hint');
+      var apps = s.apps.apps || [];
+      if (apps.length === 0) {
+        list.innerHTML = '';
+        hint.textContent = 'No apps found';
+      } else {
+        hint.textContent = apps.length + ' apps — tap to toggle access';
+        var html = '';
+        apps.forEach(function (a) {
+          var on = a.enabled !== false;
+          html += '<div class="app-row">' +
+            '<label class="switch-app">' +
+            '<input type="checkbox" data-pkg="' + a.pkg + '" ' + (on ? 'checked' : '') + '><span class="track"></span>' +
+            '</label>' +
+            '<div class="app-info">' +
+            '<div class="app-name">' + escapeHtml(a.label) + '</div>' +
+            '<div class="app-pkg">' + a.pkg + '</div>' +
+            '</div>' +
+            '</div>';
+        });
+        list.innerHTML = html;
+        // wire toggles
+        list.querySelectorAll('input[data-pkg]').forEach(function (cb) {
+          cb.addEventListener('change', function () {
+            var pkg = this.getAttribute('data-pkg');
+            var enabled = this.checked;
+            api('/api/app-access', { pkg: pkg, enabled: enabled }).then(function (r) {
+              if (r.ok) toast('App access ' + (enabled ? 'enabled' : 'disabled'), 'good');
+              else toast('Failed to change access', 'bad');
+            }).catch(function () { toast('Failed to change access', 'bad'); });
+          });
+        });
+      }
+    }
+
+    paintPerms(s.permissions);
 
   var permsKey = '';
   function paintPerms(p) {
@@ -695,6 +762,12 @@
         '</div>';
     });
     $('perms').innerHTML = html;
+  }
+
+  function escapeHtml(t) {
+    var d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
   }
 
   function setRange(id, value, decimals, suffix) {

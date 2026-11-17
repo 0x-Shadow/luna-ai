@@ -103,6 +103,30 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     /** App-control automation layer: launch, tap, type, scroll, multi-step tasks. */
     private val automationBridge = AutomationBridge(ctx)
 
+    // ── app access control (user-picked allow list for app control) ──
+    private fun appAccessPrefs() = ctx.getSharedPreferences("pal_app_access", Context.MODE_PRIVATE)
+    private fun appAccessEnabled(pkg: String): Boolean =
+        appAccessPrefs().getBoolean(pkg, true)   // default: enabled
+    fun setAppAccessEnabled(pkg: String, enabled: Boolean) {
+        appAccessPrefs().edit().putBoolean(pkg, enabled).apply()
+    }
+
+    /** All launcher apps with their access status. */
+    fun appsWithAccessJson(): String {
+        val pm = ctx.packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val acts = pm.queryIntentActivities(intent, 0)
+        val arr = JSONArray()
+        acts.sortedBy { it.loadLabel(pm).toString().lowercase() }.forEach { ai ->
+            val pkg = ai.activityInfo.packageName
+            arr.put(JSONObject()
+                .put("label", ai.loadLabel(pm).toString())
+                .put("pkg", pkg)
+                .put("enabled", appAccessEnabled(pkg)))
+        }
+        return JSONObject().put("apps", arr).toString()
+    }
+
     /* ═══════════ entry point from JS ═══════════ */
 
     @JavascriptInterface
@@ -131,7 +155,14 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 "torch" -> torch(requestId, payload)
                 "brightness" -> brightness(requestId, payload)
                 "volume" -> volume(requestId, payload)
-                "apps" -> resolve(requestId, true, appsJson())
+                "apps" -> resolve(requestId, true, appsWithAccessJson())
+                "appsWithAccess" -> resolve(requestId, true, appsWithAccessJson())
+                "setAppAccess" -> {
+                    val pkg = payload.optString("pkg", "")
+                    val enabled = payload.optBoolean("enabled", true)
+                    setAppAccessEnabled(pkg, enabled)
+                    resolve(requestId, true, JSONObject().put("ok", true).put("pkg", pkg).put("enabled", enabled).toString())
+                }
                 "openApp" -> openApp(requestId, payload)
                 "settings" -> openSettings(requestId, payload)
                 "dial" -> dial(requestId, payload)
@@ -1352,12 +1383,19 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             resolve(requestId, false, JSONObject().put("error", "no app matches '$raw'").toString())
             return
         }
-        val launch = pm.getLaunchIntentForPackage(match.activityInfo.packageName)
+        val pkg = match.activityInfo.packageName
+        if (!appAccessEnabled(pkg)) {
+            resolve(requestId, false, JSONObject()
+                .put("error", "app access disabled: ${match.loadLabel(pm)}")
+                .put("pkg", pkg).toString())
+            return
+        }
+        val launch = pm.getLaunchIntentForPackage(pkg)
         if (launch == null) { resolve(requestId, false, err("cannot launch")); return }
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         ctx.startActivity(launch)
-        Log.d(TAG, "[App] opened ${match.loadLabel(pm)} (${match.activityInfo.packageName})")
-        resolve(requestId, true, JSONObject().put("label", match.loadLabel(pm).toString()).toString())
+        Log.d(TAG, "[App] opened ${match.loadLabel(pm)} ($pkg)")
+        resolve(requestId, true, JSONObject().put("label", match.loadLabel(pm).toString()).put("pkg", pkg).toString())
     }
 
     /* ── intents: calls, links, search, navigation, media keys ── */
