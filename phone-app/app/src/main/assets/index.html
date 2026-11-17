@@ -1889,13 +1889,14 @@
       try { action = PALBrain.parseIntent(text, Date.now()); }
       catch (e) { console.error('[Brain] parse error', e); }
 
-      if (action) { executeLocal(action); return; }
+      if (action) { executeLocal(action, text); return; }
       askHermes(text);
     }
 
-    function executeLocal(action, opts) {
+    function executeLocal(action, text, opts) {
       const silent = !!(opts && opts.silent);
       const confirmed = !!(opts && opts.confirmed);
+      const saidText = String(text || '');
       if (action.needWhen) {
         pendingWhen = { kind: action.type, partial: action.partial || {} };
         speakLine(PALBrain.askWhenText(action.type, voiceLang()));
@@ -1924,11 +1925,27 @@
         case 'torch':      call = Bridge.call('torch', { on: action.on }); break;
         case 'brightness': call = Bridge.call('brightness', { value: action.value, op: action.op }); break;
         case 'volume':     call = Bridge.call('volume', { value: action.value, op: action.op, stream: action.stream }); break;
-        case 'openApp':    call = Bridge.call('openApp', { query: action.query }); break;
+        case 'openApp': {
+          call = Bridge.call('openApp', { query: action.query });
+          // "open Spotify and play" → after opening the app, start media playback.
+          if (saidText && /\bplay\b/.test(saidText)) {
+            call = call.then(() => new Promise(r => setTimeout(r, 2500)))
+              .then(() => Bridge.call('media', { op: 'play' }));
+          }
+          break;
+        }
         case 'settings':   call = Bridge.call('settings', { panel: action.panel }); break;
         case 'battery':    call = Bridge.call('battery', {}); break;
         case 'dial':       call = Bridge.call('dial', { number: action.number, contact: action.contact }); break;
-        case 'search':     call = Bridge.call('search', { query: action.query }); break;
+        case 'search': {
+          if (action.query && action.query.trim()) {
+            call = Bridge.call('search', { query: action.query });
+          } else {
+            // "use google" / "open google" with no query → open Google homepage.
+            call = Bridge.call('url', { url: 'https://google.com' });
+          }
+          break;
+        }
         case 'youtube':    call = Bridge.call('youtube', { query: action.query }); break;
         case 'navigate':   call = Bridge.call('navigate', { query: action.query }); break;
         case 'url':        call = Bridge.call('url', { url: action.url }); break;

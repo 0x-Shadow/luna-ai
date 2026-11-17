@@ -1336,6 +1336,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             raw.replace(" ", "") == "ytmusic" || raw == "youtube music" || raw == "yt music" ->
                 listOf("yt music", "youtube music")
             raw == "insta" -> listOf("instagram")
+            raw == "google" -> listOf("google")
             else -> listOf(raw)
         }
         var match: android.content.pm.ResolveInfo? = null

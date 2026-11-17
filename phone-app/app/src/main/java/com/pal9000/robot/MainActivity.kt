@@ -122,9 +122,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Web panel: http://<phone-ip>:8899/ — config, permissions, tools.
-        // Temporarily disabled — causes ANR on Android 14. Re-enable once
-        // foreground service restrictions are resolved.
-        // PanelService.ensureRunning(this)
+        // Runs in a foreground service so the panel stays reachable in the background.
+        PanelService.ensureRunning(this)
 
         // Keep Loona's wake-word loop alive while the app is backgrounded.
         BrainService.ensureRunning(this)

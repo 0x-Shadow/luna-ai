@@ -10,7 +10,9 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import kotlin.concurrent.thread
 
 /**
  * Keeps the web panel alive while Loona is in the background.
@@ -18,6 +20,9 @@ import androidx.core.content.ContextCompat
  * Without a foreground service Android freezes the app, and a frozen app still
  * holds its listening socket — connections arrive but nothing ever answers,
  * which looks exactly like "the page won't load".
+ *
+ * The server is started on a background thread so onCreate()/onStartCommand()
+ * never block the main thread (which caused ANRs on Android 14+).
  */
 class PanelService : Service() {
 
@@ -41,12 +46,17 @@ class PanelService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // Post the notification FIRST so the foreground service is valid
+        // immediately, then start the server on a background thread.
         startForeground(NOTIF_ID, buildNotification(null))
-        attachServer()
+        thread(name = "pal-panel-start", isDaemon = true) {
+            try { attachServer() } catch (e: Exception) {
+                Log.w(TAG, "[Panel] attachServer failed: ${e.message}")
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        attachServer()
         return START_STICKY
     }
 
