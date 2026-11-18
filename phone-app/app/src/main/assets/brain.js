@@ -219,6 +219,23 @@
     return null;
   }
 
+  // "Just play something" phrasing, English + Greek. A named track or artist is
+  // a YouTube search; these generic ones should start playback instead of
+  // leaving the user staring at a page of search results.
+  const GENERIC_MUSIC = /^(?:(?:some|any(?:\s+kind\s+of)?|a\s+bit\s+of)\s+|(?:οποιαδ[ήη]ποτε|οποιαδηποτε|κάθε|καθε|ό,?τι|οτιδ[ήη]ποτε|λ[ίι]γ[ηο]|καπ[οό]ια|χαλαρ[ήη])\s+)?(?:μουσικ[ήη]?|τραγο[ύυ]δια|τραγουδια|music|songs?|something|anything|κάτι|κατι)$/;
+
+  function isGenericMusic(q) {
+    return GENERIC_MUSIC.test(String(q || '').toLowerCase().trim());
+  }
+
+  // Which music app the utterance names, if any ("play X on spotify").
+  function musicApp(s) {
+    const t = String(s || '').toLowerCase();
+    if (/spotify|σποτιφ[άα]ι|σποτιφαι/.test(t)) return 'spotify';
+    if (/youtube|you tube|yt music|youtube music|γιουτιο[ύυ]μπ|γιουτιουμπ|γιου ?τιουμπ/.test(t)) return 'youtube';
+    return null;
+  }
+
   // Greek command understanding (works offline, no model round-trip).
   function parseGreek(t, nowMs) {
     const s = String(t || '').toLowerCase();
@@ -295,10 +312,12 @@
         .replace(/\b(?:σε παρακαλ[ώω]|τώρα|τωρα|για μ[έε]να)\b/g, '')
         .trim();
       q = q.replace(/^(?:λ[ίι]γ[ηο]|καπ[οό]ια|χαλαρ[ήη]|χαλαρη)\s+/, '').trim();
-      if (!q || /^(?:μουσικ[ήη]?|μουσικη|τραγο[ύυ]δια|τραγουδια|αυτ[όο]|αυτο|κάτι|κατι|χαλαρ[άα]|χαλαρα)$/.test(q)) {
-        return { type: 'music' };
+      const app = musicApp(s);
+      if (!q || isGenericMusic(q) || /^(?:αυτ[όο]|αυτο|χαλαρ[άα]|χαλαρα)$/.test(q)) {
+        return app ? { type: 'music', app: app } : { type: 'music' };
       }
-      return { type: 'youtube', query: q };
+      if (app === 'spotify') return { type: 'music', app: 'spotify', query: q };
+      return { type: 'youtube', query: q, play: true, app: app || undefined };
     }
 
     if (/(υπενθύμιση|υπενθυμιση|θύμισ[εέ]|θυμισε|θυμήσου|θυμησου)/.test(s)) {
@@ -375,6 +394,14 @@
     m = /\b(?:turn|switch)\s+(on|off)\s+(?:the\s+)?(?:(.+?)\s+)?(?:lights?|lamps?|bulbs?)\b/.exec(s);
     if (m) return { type: 'ha', domain: 'light', service: m[1] === 'on' ? 'turn_on' : 'turn_off',
                     target: (m[2] || '').replace(/\b(?:the|in|at|of)\b/g, '').trim() || null };
+    // "close/shut the bedroom light", "open the kitchen light" — people say
+    // this for lights as often as "turn off".
+    m = /\b(close|shut|kill|switch\s+off)\s+(?:the\s+)?(?:(.+?)\s+)?(?:lights?|lamps?|bulbs?)\b/.exec(s);
+    if (m) return { type: 'ha', domain: 'light', service: 'turn_off',
+                    target: (m[2] || '').replace(/\b(?:the|in|at|of)\b/g, '').trim() || null };
+    m = /\b(?:open|switch\s+on)\s+(?:the\s+)?(?:(.+?)\s+)?(?:lights?|lamps?|bulbs?)\b/.exec(s);
+    if (m) return { type: 'ha', domain: 'light', service: 'turn_on',
+                    target: (m[2] || '').replace(/\b(?:the|in|at|of)\b/g, '').trim() || null };
     m = /^(?:(.+?)\s+)?(?:lights?|lamps?|bulbs?)\s+(?:on|off)\b/.exec(s);
     if (m && /\b(on|off)\b/.test(s)) {
       const onOff = /\boff\b/.test(s) ? 'turn_off' : 'turn_on';
@@ -416,9 +443,45 @@
       return { type: 'settings', panel: panel === 'screen' ? 'display' : panel };
     }
 
-    // "start playing (on yt music / spotify / youtube)" → start the music app
-    if (/\b(start|play|put on|resume)\b/.test(s) && /\bmusic\b/.test(s)) return { type: 'music' };
-    if (/^(?:start|play|put on|resume)\s+(?:playing\s+)?(?:on\s+)?(?:yt|youtube|spotify|yt music|youtube music)\s*$/.test(s)) return { type: 'music' };
+    // "open youtube and play X" / "open spotify and play" — a named app must be
+    // honoured (the old rules answered "music" and opened YT Music whatever the
+    // user asked for).
+    m = /^(?:please\s+)?(?:open|launch|start)\s+(?:the\s+)?(yt music|youtube music|you\s*tube|youtube|spotify)\b(.*)$/.exec(body.toLowerCase());
+    if (m) {
+      const name = m[1].replace(/\s+/g, ' ');
+      const app = /spotify/.test(name) ? 'spotify' : /music/.test(name) ? 'ytmusic' : 'youtube';
+      const rest = (m[2] || '').replace(/^\s*(?:,|and|then|και)\s*/, '').trim();
+      // "open youtube.com" is a link, not an app launch
+      if (/^[./]/.test(rest)) return { type: 'url', url: 'https://' + name.replace(/\s+/g, '') + rest };
+      if (!rest) return { type: 'openApp', query: name };
+      const wantsSearch = /^(?:and\s+)?(?:search|find|look for)\b/.test(rest);
+      const verb = /^(?:and\s+)?(?:play|put on|queue up|search(?:\s+for)?|find|look for)\s+(.*)$/.exec(rest);
+      // "open spotify and play" (no song) leaves a bare verb behind — that is
+      // a generic request, not a track called "play".
+      let q = (verb ? verb[1] : rest).trim();
+      if (/^(?:play|put on|queue up|search|find|look for|playing)$/.test(q)) q = '';
+      // "open spotify and play despacito" must stay in Spotify: search there
+      // and tap the result instead of falling back to YouTube.
+      if (app === 'spotify') {
+        return q && !isGenericMusic(q)
+          ? { type: 'music', app: 'spotify', query: q }
+          : { type: 'music', app: 'spotify' };
+      }
+      if (app === 'ytmusic') return { type: 'music', app: 'ytmusic' };
+      if (!q || isGenericMusic(q)) return { type: 'music', app: 'youtube' };
+      return { type: 'youtube', query: q, play: !wantsSearch };
+    }
+
+    // "start playing (on yt music / spotify / youtube)" → start the music app.
+    // Only for generic requests: "play some lofi music" names a track and must
+    // fall through to the YouTube search below.
+    const playTail = (/(?:start|play|put on|resume)\s+(?:playing\s+)?(?:on\s+)?(.+)$/.exec(s) || [])[1] || '';
+    if (/\b(start|play|put on|resume)\b/.test(s) && /\bmusic\b/.test(s) && isGenericMusic(playTail)) {
+      return { type: 'music', app: musicApp(s) || undefined };
+    }
+    if (/^(?:start|play|put on|resume)\s+(?:playing\s+)?(?:on\s+)?(?:yt|youtube|spotify|yt music|youtube music)\s*$/.test(s)) {
+      return { type: 'music', app: musicApp(s) || undefined };
+    }
     if (/^(?:start|play)\s+playing\s*$/.test(s)) return { type: 'music' };
     if (/\b(stop|pause)\s+music\b/.test(s)) return { type: 'music', op: 'pause' };
     if (/\b(resume|continue)\s+music\b/.test(s)) return { type: 'music', op: 'play' };
@@ -496,9 +559,11 @@
 
     // "play X on youtube" / "youtube X"
     m = /\b(?:play|put on|find)\s+(.+?)\s+on\s+(?:youtube|you tube)\b/.exec(body.toLowerCase());
-    if (m) return { type: 'youtube', query: m[1].trim() };
+    if (m) return { type: 'youtube', query: m[1].trim(), play: true };
     m = /^(?:open\s+)?youtube\s+(?:and\s+)?(?:play|search|find)?\s*(.*)$/.exec(body.toLowerCase());
-    if (m) return { type: 'youtube', query: (m[1] || '').trim() };
+    if (m) {
+      return { type: 'youtube', query: (m[1] || '').trim(), play: !/\bsearch\b/.test(s) };
+    }
 
     // "play X" / "put on X" → queue it up on YouTube. A plain phone can't
     // start Spotify playback by voice, but this at least opens the song.
@@ -509,10 +574,14 @@
         .replace(/^(?:the\s+)?(?:song|track|video)\s+/, '')
         .replace(/\b(?:please|now|for me)\b/g, '')
         .trim();
-      if (!q || /^(?:that|it|this|one|something|anything|a song|songs|some music|music|the music)$/.test(q)) {
-        return { type: q === 'music' || q === 'some music' || q === 'the music' || q === 'a song' || q === 'songs' ? 'music' : 'media', op: 'play' };
+      if (!q || isGenericMusic(q) || /^(?:that|it|this|one|a song|the music)$/.test(q)) {
+        return isGenericMusic(q) || /^(?:a song|the music)$/.test(q)
+          ? { type: 'music', app: musicApp(s) || undefined }
+          : { type: 'media', op: 'play' };
       }
-      return { type: 'youtube', query: q };
+      // "play X on spotify" names the player — keep it out of YouTube.
+      if (musicApp(s) === 'spotify') return { type: 'music', app: 'spotify', query: q };
+      return { type: 'youtube', query: q, play: true, app: musicApp(s) || undefined };
     }
 
     // "navigate to X" / "directions to X" / "take me to X"
@@ -631,13 +700,15 @@
       case 'settings': return 'Ανοίγω τις ρυθμίσεις ' + action.panel + '.';
       case 'dial':     return action.number ? 'Καλώ ' + action.number + '.' : 'Ανοίγω τον dialer.';
       case 'search':   return 'Ψάχνω ' + action.query + '.';
-      case 'youtube':  return action.query ? 'Βρίσκω ' + action.query + ' στο YouTube.' : 'Ανοίγω το YouTube.';
+      case 'youtube':  return !action.query ? 'Ανοίγω το YouTube.'
+        : action.play !== false ? 'Παίζω ' + action.query + ' στο YouTube.'
+        : 'Βρίσκω ' + action.query + ' στο YouTube.';
       case 'navigate': return 'Οδηγίες για ' + action.query + '.';
       case 'notify':   return 'Το σημείωσα.';
       case 'media':    return action.op === 'next' ? 'Επόμενο.' :
         action.op === 'prev' ? 'Προηγούμενο.' :
         action.op === 'pause' ? 'Παύση.' : 'Παίζει.';
-      case 'music':    return 'Βάζω μουσική.';
+      case 'music':    return action.query ? 'Παίζω ' + action.query + '.' : 'Βάζω μουσική.';
       case 'time':     return sentence('Είναι ' + new Date(now).toLocaleTimeString('el-GR', { hour: '2-digit', minute: '2-digit' }));
       case 'date':     return sentence('Σήμερα είναι ' + new Date(now).toLocaleDateString('el-GR', { weekday: 'long', day: 'numeric', month: 'long' }));
       case 'battery':  return 'Η μπαταρία είναι ' + (action.percent != null ? action.percent + ' τοις εκατό.' : 'κάτι που θα τσεκάρω.');
@@ -679,14 +750,16 @@
       case 'dial':     return action.number ? 'Calling ' + action.number + '.' :
         'Bringing up the dialer for ' + (action.contact || 'you') + '.';
       case 'search':   return 'Searching for ' + action.query + '.';
-      case 'youtube':  return action.query ? 'Looking for ' + action.query + ' on YouTube.' : 'Opening YouTube.';
+      case 'youtube':  return !action.query ? 'Opening YouTube.'
+        : action.play !== false ? 'Playing ' + action.query + ' on YouTube.'
+        : 'Looking for ' + action.query + ' on YouTube.';
       case 'navigate': return 'Getting directions to ' + action.query + '.';
       case 'url':      return 'Opening that page.';
       case 'notify':   return 'Noted.';
       case 'media':    return action.op === 'next' ? 'Next one.' :
         action.op === 'prev' ? 'Going back.' :
         action.op === 'pause' ? 'Paused.' : 'Playing.';
-      case 'music':    return 'Music on.';
+      case 'music':    return action.query ? 'Playing ' + action.query + '.' : 'Music on.';
       case 'time':     return 'It\'s ' + new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '.';
       case 'date':     return 'Today is ' + new Date(now).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }) + '.';
       case 'battery':  return 'Battery is ' + (action.percent != null ? action.percent + ' percent.' : 'something I\'ll check.');

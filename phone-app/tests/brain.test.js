@@ -205,5 +205,34 @@ ok('confirm torch', B.confirmText({ type: 'torch', on: true }) === 'Flashlight o
    values applied; low-battery chip at <20%.
 */
 
+/* ── named music app + "play" routing ───────────────────────────── */
+{
+  // The app the user named is kept, instead of silently opening YT Music.
+  eq('open spotify and play → spotify', B.parseIntent('open spotify and play', NOW),
+    { type: 'music', app: 'spotify' });
+  eq('play music on spotify → spotify', B.parseIntent('play music on spotify', NOW),
+    { type: 'music', app: 'spotify' });
+  eq('greek spotify + play', B.parseIntent('άνοιξε το spotify και παίξε μουσική', NOW),
+    { type: 'music', app: 'spotify' });
+
+  // "play some music" on YouTube must play something, not just search.
+  eq('greek youtube music', B.parseIntent('άνοιξε το youtube και παίξε οποιαδήποτε μουσική', NOW),
+    { type: 'music', app: 'youtube' });
+  eq('youtube generic music', B.parseIntent('open youtube and play any kind of music', NOW),
+    { type: 'music', app: 'youtube' });
+
+  // A named track goes to YouTube search WITH autoplay.
+  eq('play lofi on youtube', B.parseIntent('play lofi on youtube', NOW),
+    { type: 'youtube', query: 'lofi', play: true });
+  eq('open youtube and play lofi', B.parseIntent('open youtube and play lofi', NOW),
+    { type: 'youtube', query: 'lofi', play: true });
+  // "search" explicitly means: do not autoplay.
+  eq('open youtube and search for lofi', B.parseIntent('open youtube and search for lofi', NOW),
+    { type: 'youtube', query: 'lofi', play: false });
+  // "play some lofi music" names content — it is a search, not the music app.
+  eq('play some lofi music', B.parseIntent('play some lofi music', NOW),
+    { type: 'youtube', query: 'some lofi music', play: true });
+}
+
 console.log(`\nbrain.test: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

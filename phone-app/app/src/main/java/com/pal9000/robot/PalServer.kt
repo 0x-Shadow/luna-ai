@@ -71,7 +71,10 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
                 running = true
                 port = p
                 thread(name = "pal-panel", isDaemon = true) { acceptLoop(ss) }
-                Log.d(TAG, "[Panel] listening on http://${localIp()}:$p")
+                // Log the tokenized URL so logcat always hands back a
+                // ready-to-open link — without it a forgotten panel token
+                // leaves the page stuck on "offline" with no way to recover.
+                Log.d(TAG, "[Panel] listening on ${tokenizedUrl()}")
                 return p
             } catch (e: Exception) {
                 Log.w(TAG, "[Panel] port $p unavailable: ${e.message}")
@@ -88,6 +91,15 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
     }
 
     fun url(): String = if (port == 0) "" else "http://${localIp()}:$port/"
+
+    /** URL including the access token (when one is set), so the logcat line and
+     *  the ongoing notification can hand back a ready-to-open link and the user
+     *  can recover the token if they lose it. */
+    fun tokenizedUrl(): String {
+        if (port == 0) return ""
+        val t = panelToken()
+        return if (t.isNotBlank()) "http://${localIp()}:$port/?t=$t" else url()
+    }
 
     private fun acceptLoop(ss: ServerSocket) {
         try { ss.soTimeout = 1000 } catch (e: Exception) { /* ignore */ }

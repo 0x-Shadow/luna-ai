@@ -200,6 +200,25 @@
     }
     #clock-chip.on { opacity: 1; }
 
+    /* Setup chip: shown until phone control + bubble-over-apps are granted,
+       so nothing has to be enabled over adb from a computer. */
+    #setup-chip {
+      display: none;
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      top: 12px;
+      z-index: 40;
+      font: 600 14px/1 system-ui, sans-serif;
+      color: #04121a;
+      background: #7fe3ff;
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 18px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    }
+    #setup-chip.on { display: block; }
+
     #status-banner {
       position: fixed;
       top: 0; left: 0; right: 0;
@@ -392,6 +411,20 @@
       text-transform: uppercase;
     }
     #config-panel p { font-size: 11px; color: rgba(255, 255, 255, 0.4); margin: 4px 0 0; }
+    #cfg-diag-out {
+      display: none;
+      margin: 8px 0 0;
+      max-height: 190px;
+      overflow: auto;
+      font: 11px/1.4 ui-monospace, Menlo, monospace;
+      color: #bfe9ff;
+      background: rgba(0, 0, 0, 0.45);
+      border-radius: 8px;
+      padding: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #cfg-diag-out.on { display: block; }
     #thinking::before {
       content: '\2726';
       display: block;
@@ -544,6 +577,7 @@
   </div>
 
   <div id="wake-status"></div>
+  <button id="setup-chip" type="button"></button>
   <div id="clock-chip"></div>
   <div id="config-hotspot" title="Hold to open settings"></div>
   <div id="config-panel">
@@ -566,14 +600,32 @@
     <label class="chk"><input type="checkbox" id="cfg-whisper-on"> Hear commands with whisper on the LAN</label>
     <h3>Home Assistant</h3>
     <label>HA URL<input id="cfg-ha-url" inputmode="url" autocapitalize="off" autocomplete="off" placeholder="http://homeassistant.local:8123"></label>
-    <label>HA token<input id="cfg-ha-token" type="password" autocapitalize="off" autocomplete="off" placeholder="Long-lived access token"></label>
+    <label>HA username<input id="cfg-ha-user" autocapitalize="none" autocomplete="username" placeholder="Home Assistant account"></label>
+    <label>HA password<input id="cfg-ha-pass" type="password" autocomplete="current-password"></label>
+    <div class="row">
+      <button id="cfg-ha-signin">Sign in</button>
+    </div>
+    <label>…or paste a token<input id="cfg-ha-token" type="password" autocapitalize="off" autocomplete="off" placeholder="Long-lived access token"></label>
+    <div class="row">
+      <button id="cfg-ha-find">Find server</button>
+      <button id="cfg-ha-test">Test</button>
+    </div>
     <p id="cfg-ha-status">Home Assistant: not configured</p>
+    <p style="opacity:.65;font-size:12px;margin:2px 0 8px">Token: Home Assistant app → Profile → Security → Long-lived access tokens.</p>
     <div class="row">
       <button id="cfg-save">Save</button>
       <button id="cfg-close">Close</button>
     </div>
     <p id="cfg-hint">Hold the bottom-left corner for a second to reopen.</p>
     <p id="cfg-panel">Web panel: —</p>
+
+    <h3 style="margin-top:16px">Diagnostics</h3>
+    <div class="row">
+      <button id="cfg-diag">Show</button>
+      <button id="cfg-diag-copy">Copy</button>
+      <button id="cfg-diag-clear">Clear</button>
+    </div>
+    <pre id="cfg-diag-out"></pre>
   </div>
 
   <div id="action-card"><span class="ic"></span><div><div class="t"></div><div class="d"></div></div></div>
@@ -1190,10 +1242,10 @@
       const voiced = level > thresh;
       audioMeterBar.style.width = (voiced ? level * 100 : level * 55) + '%';
 
-      // Envelope wake detector runs in parallel with the speech loop (WAKE_MODE
-      // 'both'): the recognizer alone misses short Greek words, so the shape
-      // matcher gives a second chance on every voiced utterance.
-      if (wakeDet && wakeArmed && (WAKE_MODE === 'both' || envelopeFallback)) {
+      // Envelope wake detector is a FALLBACK only: when it ran alongside the
+      // recognizer, any loud voice in the room (TV, conversation) opened a turn
+      // and she answered complete strangers. Only use it when STT is failing.
+      if (wakeDet && wakeArmed && envelopeFallback) {
         const events = wakeDet.push(t, level);
         for (const ev of events) {
           if (ev.type === 'wake' && wakeArmed) onWakeWord('voice');
@@ -1631,6 +1683,44 @@
     }
     window.openConfig = openConfig;
 
+    document.getElementById('cfg-ha-find').addEventListener('click', () => {
+      cfgHaStatus.textContent = 'Home Assistant: searching the Wi-Fi…';
+      Bridge.call('ha', { action: 'discover' }, 12000).then(r => {
+        cfgHaUrl.value = r.url || cfgHaUrl.value;
+        cfgHaStatus.textContent = 'Found ' + (r.name || 'Home Assistant') + ' at ' + (r.url || '') + ' — paste the token, then Test';
+      }).catch(e => {
+        cfgHaStatus.textContent = 'Home Assistant: ' + ((e && e.error) || 'not found — type the IP');
+      });
+    });
+
+    document.getElementById('cfg-ha-signin').addEventListener('click', () => {
+      const user = (document.getElementById('cfg-ha-user').value || '').trim();
+      const pass = document.getElementById('cfg-ha-pass').value || '';
+      cfgHaStatus.textContent = 'Home Assistant: signing in…';
+      Bridge.call('ha', { action: 'login', username: user, password: pass }, 25000).then(() => {
+        document.getElementById('cfg-ha-pass').value = '';
+        cfgHaStatus.textContent = 'Home Assistant: signed in';
+        return Bridge.call('ha', { action: 'test' }, 20000);
+      }).then(r => {
+        const names = (r.sample || []).join(', ');
+        cfgHaStatus.textContent = 'Home Assistant: ' + r.entities + ' entities, ' + r.controllable +
+          ' lights/switches' + (names ? ' — ' + names : '');
+      }).catch(e => {
+        cfgHaStatus.textContent = 'Home Assistant: ' + ((e && e.error) || 'sign-in failed');
+      });
+    });
+
+    document.getElementById('cfg-ha-test').addEventListener('click', () => {
+      cfgHaStatus.textContent = 'Home Assistant: testing…';
+      Bridge.call('ha', { action: 'test' }, 20000).then(r => {
+        const names = (r.sample || []).join(', ');
+        cfgHaStatus.textContent = 'Home Assistant: ' + r.entities + ' entities, ' + r.controllable +
+          ' lights/switches' + (names ? ' — ' + names : '');
+      }).catch(e => {
+        cfgHaStatus.textContent = 'Home Assistant: ' + ((e && e.error) || 'connection failed');
+      });
+    });
+
     document.getElementById('cfg-save').addEventListener('click', () => {
       const cfg = {
         url: (cfgUrl.value || '').trim() || PALBrain.DEFAULT_CONFIG.url,
@@ -1666,6 +1756,33 @@
       });
     });
     document.getElementById('cfg-close').addEventListener('click', closeConfig);
+
+    /* ── diagnostics (readable from the phone, no computer) ── */
+    const diagOut = document.getElementById('cfg-diag-out');
+    let diagText = '';
+    async function loadDiag() {
+      try {
+        const r = await Bridge.call('diag', {}, 6000);
+        const lines = (r && r.lines) || [];
+        diagText = lines.length ? lines.join('\n') : 'Nothing recorded yet — say “Λούνα”, play music, set a timer…';
+      } catch (e) {
+        diagText = 'Diagnostics unavailable: ' + e.message;
+      }
+      diagOut.textContent = diagText;
+      diagOut.classList.add('on');
+    }
+    document.getElementById('cfg-diag').addEventListener('click', loadDiag);
+    document.getElementById('cfg-diag-copy').addEventListener('click', async () => {
+      if (!diagText) await loadDiag();
+      try { await Bridge.call('clipboard', { text: diagText }, 6000); showBanner('Diagnostics copied'); }
+      catch (e) { showBanner('Copy failed'); }
+    });
+    document.getElementById('cfg-diag-clear').addEventListener('click', async () => {
+      try { await Bridge.call('clearDiag', {}, 4000); } catch (e) { /* ignore */ }
+      diagText = '';
+      diagOut.textContent = '';
+      diagOut.classList.remove('on');
+    });
 
     const hotspot = document.getElementById('config-hotspot');
     let holdTimer = null;
@@ -1866,6 +1983,7 @@
       cardTimer = setTimeout(() => {
         cardEl.classList.remove('visible');
         cardAction = null;
+        pendingConfirm = null;   // a card that timed out must not eat a later "yes"
         cardEl.style.pointerEvents = 'none';
       }, action ? 20000 : 9000);
     }
@@ -1880,6 +1998,8 @@
 
     // ── turn controller ──
     let pendingWhen = null;    // {kind, partial} while asking "when?"
+    let pendingConfirm = null; // callback while waiting for a spoken "yes"
+    let resumeMediaAfterSpeech = false; // TTS takes audio focus and pauses the player
     let turnActive = false;
     let wakeFired = false;
     let hermesHistory = [];
@@ -1928,6 +2048,12 @@
 
     function endTurn() {
       console.log('[Turn] end (active=' + turnActive + ', pending=' + !!pendingWhen + ', sttPending=' + sttPending + ')');
+      // The confirmation we just spoke pauses whatever it started playing
+      // (TTS asks for exclusive audio focus). Resume now that we are quiet.
+      if (resumeMediaAfterSpeech) {
+        resumeMediaAfterSpeech = false;
+        setTimeout(() => { Bridge.call('media', { op: 'play' }).catch(() => {}); }, 400);
+      }
       if (!turnActive && !pendingWhen) { startWakeLoop(); return; }
       turnActive = false;
       pendingWhen = null;
@@ -1942,6 +2068,30 @@
       if (!text) return;
       showTranscript(text);
       noteActivity();
+
+      // Completing a "…confirm?" exchange: "add a timer" → "yes".
+      // Without this the confirm card only responded to a tap, so a spoken
+      // yes fell through to Hermes and the timer never started.
+      if (pendingConfirm) {
+        const yn = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase().replace(/[.!;]/g, '').trim();
+        const yes = /^(yes|yeah|yep|yup|ok|okay|sure|affirmative|do it|go ahead|confirm)\b/.test(yn) ||
+                    /^(ναι|μαλιστα|ενταξει|οκ|σιγουρα|καντο|καν το|προχωρα)\b/.test(yn);
+        const no = /^(no|nope|cancel|stop|forget it|dont)\b/.test(yn) ||
+                   /^(οχι|ακυρο|ακυρωσε|ματα|αστο)\b/.test(yn);
+        if (yes) {
+          const run = pendingConfirm;
+          pendingConfirm = null;
+          run();
+          return;
+        }
+        if (no) {
+          pendingConfirm = null;
+          speakLine(tr('Εντάξει, το ακύρωσα.', 'Okay, cancelled.'));
+          return;
+        }
+        pendingConfirm = null;          // not a yes/no — treat as a fresh command
+      }
 
       // Completing a "…when?" exchange
       if (pendingWhen) {
@@ -1982,8 +2132,11 @@
       const needsConfirm = DESTRUCTIVE.has(action.type) && level !== 'none' && !confirmed;
       if (needsConfirm) {
         const trEl = PALBrain.confirmText(action, Date.now(), voiceLang());
+        const run = () => executeLocal(action, saidText, { silent, confirmed: true });
+        pendingConfirm = run;
         showCard(action.type, trEl.replace(/\.$/, '') + '?', 'warn', () => {
-          executeLocal(action, saidText, { silent, confirmed: true });
+          pendingConfirm = null;
+          run();
         });
         return;
       }
@@ -2011,7 +2164,8 @@
         case 'openApp': {
           call = Bridge.call('openApp', { query: action.query });
           // "open Spotify and play" → after opening the app, start media playback.
-          if (saidText && /\bplay\b/.test(saidText)) {
+          if (saidText && /\bplay\b|πα[ίι]ξε|β[άα]λε/.test(saidText)) {
+            resumeMediaAfterSpeech = true;
             call = call.then(() => new Promise(r => setTimeout(r, 2500)))
               .then(() => Bridge.call('media', { op: 'play' }));
           }
@@ -2029,16 +2183,46 @@
           }
           break;
         }
-        case 'youtube':    call = Bridge.call('youtube', { query: action.query }); break;
+        case 'youtube':
+          if (action.play !== false) resumeMediaAfterSpeech = true;
+          call = Bridge.call('youtube', { query: action.query, play: action.play !== false });
+          break;
         case 'navigate':   call = Bridge.call('navigate', { query: action.query }); break;
         case 'url':        call = Bridge.call('url', { url: action.url }); break;
         case 'media':      call = Bridge.call('media', { op: action.op }); break;
-        // No voice API into the music apps, so: open YT Music, then resume.
-        case 'music':      call = Bridge.call('openApp', { query: 'YT Music' })
-            .then(() => new Promise(r => setTimeout(r, 2800)))
+        // Music: honour the app the user named. Generic "play music" opens a
+        // music app and resumes; an explicit "on YouTube" searches and plays a
+        // result instead of parking on the home screen.
+        case 'music': {
+          // "play despacito" / "play despacito on spotify" names a song: search
+          // inside the named app and tap the result, don't switch apps.
+          if (action.query) {
+            resumeMediaAfterSpeech = true;
+            call = action.app === 'youtube'
+              ? Bridge.call('youtube', { query: action.query, play: true })
+              : Bridge.call('spotify', { query: action.query }, 20000);
+            break;
+          }
+          if (action.app === 'youtube') {
+            call = Bridge.call('youtube', { query: 'music', play: true });
+            break;
+          }
+          const primary = action.app === 'spotify' ? 'Spotify' : 'YT Music';
+          let openCall = Bridge.call('openApp', { query: primary });
+          if (action.app === 'spotify') {
+            openCall = openCall.catch(() => Bridge.call('openApp', { query: 'YT Music' }));
+          }
+          // Nothing installed / nothing to resume → fall back to a YouTube
+          // search that actually starts playing.
+          resumeMediaAfterSpeech = true;
+          call = openCall
+            .then(() => new Promise(r => setTimeout(r, 2600)))
             .then(() => Bridge.call('media', { op: 'play' }))
             .then(() => new Promise(r => setTimeout(r, 1200)))
-            .then(() => Bridge.call('media', { op: 'play' })); break;
+            .then(() => Bridge.call('media', { op: 'play' }))
+            .catch(() => Bridge.call('youtube', { query: 'music', play: true }));
+          break;
+        }
         case 'notify':     call = Bridge.call('notify', { title: action.title, message: action.title }); break;
         default: break;
       }
@@ -2058,6 +2242,13 @@
             ? tr(`Η μπαταρία είναι ${res.percent} τοις εκατό${res.charging ? ', φορτίζει' : ''}.`,
                  `Battery is ${res.percent} percent${res.charging ? ', charging' : ''}.`)
             : PALBrain.confirmText(action, Date.now(), voiceLang());
+        } else if (action.type === 'youtube' && action.play !== false && action.query && res && res.playing === false) {
+          line = tr('Άνοιξα το YouTube αλλά δεν βρήκα «' + action.query + '» να το παίξω.',
+                    "I opened YouTube but couldn't get \"" + action.query + '\" to play.');
+        } else if (action.type === 'music' && action.query && res && res.playing === false) {
+          // Don't claim it is playing when the result row never got tapped.
+          line = tr('Άνοιξα το Spotify αλλά δεν βρήκα «' + action.query + '».',
+                    "I opened Spotify but couldn't start \"" + action.query + '\".');
         } else if (action.type === 'cancel') {
           line = res.cancelled
             ? PALBrain.confirmText(action, Date.now(), voiceLang())
@@ -2501,6 +2692,7 @@
     onNativeReady(() => {
       applyVoiceConfig();          // language + on-device privacy for STT/TTS
       applyUi();                   // face zoom, clock, kiosk, dimming, wake on/off
+      startSetupCheck();
       Bridge.call('status', {}, 8000).then(st => {
         console.log('[Bridge] status ' + JSON.stringify(st));
         if (st && st.notifications === false) console.warn('[Bridge] notifications disabled');
@@ -2508,6 +2700,38 @@
         if (st && st.writeSettings === false) console.warn('[Bridge] write settings not granted');
       }).catch(() => {});
     });
+
+    /* ── setup chip ──
+     * Phone control (accessibility) and the bubble over other apps used to be
+     * enabled from a computer with adb. This asks for them from the phone and
+     * disappears once both are on. */
+    let setupTimer = null;
+    function startSetupCheck() {
+      if (!isNative()) return;
+      const chip = document.getElementById('setup-chip');
+      if (!chip) return;
+      chip.addEventListener('click', () => {
+        Bridge.call('openSetup', {}, 5000).catch(() => {});
+      });
+      const tick = () => {
+        Bridge.call('setup', {}, 5000).then(s => {
+          if (!s) return;
+          const missing = [];
+          if (s.accessibility === false) missing.push('phone control');
+          if (s.overlay === false) missing.push('bubble');
+          if (!missing.length) {
+            chip.classList.remove('on');
+            clearInterval(setupTimer);
+            setupTimer = null;
+            return;
+          }
+          chip.textContent = 'Tap to enable ' + missing.join(' + ');
+          chip.classList.add('on');
+        }).catch(() => {});
+      };
+      tick();
+      setupTimer = setInterval(tick, 4000);
+    }
 
     /* ══════════════════════════════════════════════════════════════
        7. SOCKET.IO (optional — the legacy port-5000 server. Down ⇒

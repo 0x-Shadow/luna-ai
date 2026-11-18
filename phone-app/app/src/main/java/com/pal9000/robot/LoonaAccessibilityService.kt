@@ -63,4 +63,24 @@ class LoonaAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {
         rootNode = null
     }
+
+    /** Ask the service for the current window right now. onAccessibilityEvent only
+     *  updates rootNode when something changes, so a snapshot taken between events
+     *  (or right after launch) came back empty — the agent could never see a
+     *  screen to tap. */
+    fun requestSnapshot(): AccessibilityNodeInfo? {
+        // getRootInActiveWindow() can legitimately return null right after the
+        // service connects or while an app is still launching; retry briefly
+        // instead of handing a null back up.
+        for (i in 0 until 3) {
+            val r = getRootInActiveWindow()
+            if (r != null) {
+                rootNode?.recycle()
+                rootNode = r
+                return r
+            }
+            if (i < 2) try { Thread.sleep(200) } catch (e: Exception) {}
+        }
+        return null
+    }
 }

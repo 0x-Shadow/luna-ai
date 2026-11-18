@@ -9,6 +9,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.PixelFormat
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -27,7 +29,11 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
+import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -37,6 +43,7 @@ import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
 import java.net.URL
@@ -70,6 +77,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
+
     private val seq = AtomicInteger(0)
 
     private var speech: SpeechRecognizer? = null
@@ -170,6 +178,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 "url" -> openUrl(requestId, payload)
                 "search" -> search(requestId, payload)
                 "youtube" -> youtube(requestId, payload)
+                "spotify" -> spotify(requestId, payload)
                 "navigate" -> navigate(requestId, payload)
                 "media" -> media(requestId, payload)
                 "ha" -> ha(requestId, payload)
@@ -177,6 +186,18 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 "notify" -> notify(requestId, payload)
                 "callLog" -> resolve(requestId, true, callLogJson())
                 "status" -> resolve(requestId, true, statusJson())
+                "setup" -> resolve(requestId, true, setupJson())
+                "diag" -> resolve(requestId, true, JSONObject()
+                    .put("lines", JSONArray(Diag.dump())).toString())
+                "clearDiag" -> { Diag.clear(); resolve(requestId, true, "{}") }
+                "clipboard" -> {
+                    try {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Loona diagnostics", payload.optString("text", "")))
+                        resolve(requestId, true, "{}")
+                    } catch (e: Exception) { resolve(requestId, false, err(e.message ?: "clipboard failed")) }
+                }
+                "openSetup" -> openSetupSettings(requestId)
                 "foreground" -> {
                     try {
                         val i = Intent(ctx, com.pal9000.robot.MainActivity::class.java).apply {
@@ -213,7 +234,14 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             syncResults[requestId] = ok to json
             latch.countDown()
         }
-        emit("window.__palResult && window.__palResult($requestId, ${if (ok) "true" else "false"}, ${jsonForJs(json)});")
+        // Only page-originated calls have a numeric id (Bridge.call uses seq++),
+        // so only they have a pending JS promise to settle. Server-side blocking
+        // calls (invokeBlocking → "srvN") are answered through the latch above;
+        // emitting them to the page would evaluate `window.__palResult(srvN, …)`
+        // and throw "ReferenceError: srvN is not defined" on every panel tool tap.
+        if (requestId.isNotEmpty() && requestId.all { it.isDigit() }) {
+            emit("window.__palResult && window.__palResult($requestId, ${if (ok) "true" else "false"}, ${jsonForJs(json)});")
+        }
     }
 
     /* ═══════════ synchronous access for the on-phone web panel ═══════════ */
@@ -269,6 +297,28 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private fun jsonForJs(json: String): String = JSONObject.quote(json)
     private fun err(msg: String): String = JSONObject().put("error", msg).toString()
+
+    /** Build a JSONObject from a Map. JSONObject(map) is NOT a constructor — calling
+     *  JSONObject(it.toString()) parsed Kotlin's Map.toString() and threw
+     *  "Expected literal value" on every snapshot/runTask result. */
+    private fun mapToJsonObject(m: Map<String, Any?>): JSONObject {
+        val o = JSONObject()
+        for ((k, v) in m) {
+            when (v) {
+                is JSONObject -> o.put(k, v)
+                is JSONArray -> o.put(k, v)
+                is Map<*, *> -> o.put(k, mapToJsonObject(v as Map<String, Any?>))
+                is List<*> -> {
+                    val arr = JSONArray()
+                    v.forEach { arr.put(it?.toString() ?: "") }
+                    o.put(k, arr)
+                }
+                is Number, is Boolean, is String -> o.put(k, v)
+                else -> o.put(k, v?.toString() ?: "")
+            }
+        }
+        return o
+    }
 
     /* ═══════════ HTTP (CORS-free Hermes proxy) ═══════════ */
 
@@ -444,7 +494,12 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 }
                 listenMode = mode
                 listenToken++
-                if (mode == "whisper" && whisperOn) {
+                // Whisper is an optional LAN add-on. Verify it actually speaks
+                // Wyoming before using it: an unresponsive server made every
+                // command sound like the phone didn't hear anything (recorded,
+                // streamed, then "Read timed out" → no transcript). Fall back to
+                // the phone's built-in recognizer when it's down.
+                if (mode == "whisper" && whisperOn && whisperReachable()) {
                     // Stop the recognizer without destroying it: it keeps the
                     // microphone input open while it listens, and a second
                     // AudioRecord started on top of it reads near-silence —
@@ -630,6 +685,18 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         val token = listenToken
         mainHandler.postDelayed({
             if (listenMode == "off" || token != listenToken) return@postDelayed
+            val bypass = gateBypass
+            gateBypass = false
+            if (listenMode == "loop" && !bypass) {
+                if (mediaPlaying()) musicBeforeLoop = true
+                if (musicBeforeLoop && !mediaPlaying()) resumeMediaOnce()
+                if (musicBeforeLoop) {
+                    Log.d(TAG, "[STT] music is playing — wake loop parked")
+                    Diag.add("music playing → wake word via hotword only")
+                    parkLoopForMedia()
+                    return@postDelayed
+                }
+            }
             ensureRecognizer()
             val intent = buildRecognizerIntent()
             lastPartialText = null            // never leak a previous session's words
@@ -694,7 +761,15 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 Log.d(TAG, "[STT] error $error ignored while whisper is listening")
                 return
             }
-            Log.d(TAG, "[STT] error $error (mode=$listenMode, lang=$lang, onDevice=$recognizerOnDevice)")
+            // In the wake loop, "no match" (7) and "no speech" (6) are the normal
+            // outcome of every listen cycle in a quiet or noisy room. Logging and
+            // emitting them as errors floods logcat and the page with noise, so
+            // restart silently for those two while looping.
+            val quietLoopError = listenMode == "loop" &&
+                (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+            if (!quietLoopError) {
+                Log.d(TAG, "[STT] error $error (mode=$listenMode, lang=$lang, onDevice=$recognizerOnDevice)")
+            }
             if (error == SpeechRecognizer.ERROR_CLIENT) clientErrors++
             // 12/13 = language model not installed on-device — drop to network
             if ((error == 12 || error == 13) && recognizerOnDevice) {
@@ -729,16 +804,17 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 if (listenMode == "loop" || listenMode == "conversation") scheduleRestart(15000, rebuild = true)
                 return
             }
-            // 7 = RECOGNIZER_BUSY (the old "no-recognition" comment was wrong):
-            // hammering startListening() on a wedged session makes it worse.
-            // Rebuild the recognizer once, then back off exponentially.
+            // ERROR_RECOGNIZER_BUSY (8): hammering startListening() on a wedged
+            // session makes it worse. Rebuild the recognizer once, then back off
+            // exponentially. (7 = NO_MATCH / 6 = SPEECH_TIMEOUT are the normal
+            // end of a listen cycle and are handled below.)
             if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) busyErrors++
-            speechEvent("error", null, sttError(error), error)
+            if (!quietLoopError) speechEvent("error", null, sttError(error), error)
             if (listenMode == "loop" || listenMode == "conversation") {
                 val wait = when {
                     error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
                         (500L * (1 shl busyErrors.coerceAtMost(4))).coerceAtMost(8000)
-                    error == 7 || error == 6 -> 400
+                    error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 400
                     else -> (500 + clientErrors * 500).coerceAtMost(3000).toLong()
                 }
                 scheduleRestart(wait, rebuild = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)
@@ -810,10 +886,145 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private var clientErrors = 0
     private var busyErrors = 0
 
+    // Google's speech service asks for AUDIOFOCUS_GAIN on every listen, which
+    // pauses whatever is playing. A continuous wake loop restarts every ~3 s,
+    // so music stopped over and over — the "it plays and then randomly stops"
+    // bug. While media is playing the loop is parked instead; it re-arms by
+    // itself as soon as the music stops.
+    private var musicBeforeLoop = false
+
+    private fun mediaPlaying(): Boolean = try {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.isMusicActive
+    } catch (e: Exception) { false }
+
+    // isMusicActive() goes false for a moment between tracks / while the
+    // player buffers. A single reading used to re-arm the loop, which then
+    // paused the song and — since a paused player looks "not playing" — could
+    // never park again. Require several quiet checks in a row.
+    private var quietChecks = 0
+
+    private val mediaWatch = object : Runnable {
+        override fun run() {
+            if (listenMode != "loop") return
+            if (mediaPlaying() || musicBeforeLoop) {
+                quietChecks = 0
+                if (!mediaPlaying()) {
+                    // Don't hammer the player forever if it refuses to resume
+                    // (closed, killed, or it wants a fresh session).
+                    resumeAttempts++
+                    if (resumeAttempts <= 3) resumeMediaOnce()
+                    else { musicBeforeLoop = false; resumeAttempts = 0 }
+                }
+                mainHandler.postDelayed(this, 2000)
+                return
+            }
+            quietChecks++
+            if (quietChecks < 3) { mainHandler.postDelayed(this, 2000); return }
+            quietChecks = 0
+            Log.d(TAG, "[STT] media stopped — re-arming wake loop")
+            Diag.add("media stopped → normal listening")
+            hotword.stop()
+            startListening(250)
+        }
+    }
+
+    /** Press play on whatever paused, once, without starting random playback. */
+    private fun resumeMediaOnce() {
+        io.execute {
+            // Retry: a single press landed while the player was still tearing
+            // down its focus and did nothing, which left the song stopped.
+            for (tryNo in 1..4) {
+                if (mediaPlaying()) break
+                mediaSessionBridge.play()
+                Thread.sleep(1200)
+                if (!mediaPlaying()) {
+                    // transport play ignored it — try a media key
+                    try {
+                        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+                        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+                    } catch (e: Exception) { }
+                    Thread.sleep(1200)
+                }
+            }
+            Log.d(TAG, "[STT] resumed media (playing=${mediaPlaying()})")
+            Diag.add("resume music → playing=${mediaPlaying()}")
+            if (mediaPlaying()) { musicBeforeLoop = false; resumeAttempts = 0 }
+        }
+    }
+
+    /* ── wake word while media plays ──
+     * The recognizer is parked (it would pause the song). An on-device Vosk
+     * hotword detector keeps listening instead: it uses no audio focus and a
+     * tiny grammar, so the song and the TV are ignored and only "Λούνα" wakes
+     * the recognizer for a real command. */
+    private var gateBypass = false
+
+    private val hotword: HotwordEngine by lazy {
+        HotwordEngine(ctx) { onHotwordDetected() }
+    }
+
+    private fun onHotwordDetected() {
+        mainHandler.post {
+            if (listenMode != "loop") return@post
+            hotword.stop()
+            // Pause deliberately and remember it, so the command is heard
+            // cleanly and the song comes back when she has answered. Doing
+            // this ourselves beats letting the recognizer's focus grab pause
+            // it by accident, because then we know it should resume.
+            if (mediaPlaying()) {
+                mediaWasPlaying = true
+                io.execute {
+                    mediaSessionBridge.pause()
+                    Thread.sleep(400)
+                    if (mediaPlaying()) {
+                        // transport pause ignored it — toggle via media key
+                        try {
+                            val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                            am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE))
+                            am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_PAUSE))
+                        } catch (e: Exception) { }
+                        Thread.sleep(300)
+                    }
+                    Log.d(TAG, "[Hotword] music paused for the command (playing=${mediaPlaying()})")
+                    Diag.add("music paused for the command (playing=${mediaPlaying()})")
+                }
+                Diag.add("wake word → listening for the command")
+            }
+            gateBypass = true          // one recognizer window
+            startListening(420)        // let the pause land before we listen
+        }
+    }
+
+    /** Stop the wake loop while music plays and put playback back if the last
+     *  listen cycle paused it. */
+    private fun parkLoopForMedia() {
+        mainHandler.removeCallbacks(mediaWatch)
+        mainHandler.postDelayed(mediaWatch, 2000)
+        hotword.start()
+        if (!musicBeforeLoop || mediaPlaying()) return
+        resumeAttempts++
+        if (resumeAttempts > 2) {
+            // The player is gone (closed/killed) — stop trying so we don't
+            // press play into some other app.
+            musicBeforeLoop = false
+            resumeAttempts = 0
+            return
+        }
+        resumeMediaOnce()
+    }
+
+    private var resumeAttempts = 0
+
     private fun scheduleRestart(delayMs: Long, rebuild: Boolean = false) {
         val token = listenToken
         mainHandler.postDelayed({
             if (listenMode == "off" || token != listenToken) return@postDelayed
+            if (listenMode == "loop" && (mediaPlaying() || musicBeforeLoop)) {
+                parkLoopForMedia()
+                return@postDelayed
+            }
             // A recognizer that has been cancelled and restarted in quick
             // succession wedges itself (ERROR_CLIENT forever). Build a fresh
             // one instead of hammering startListening().
@@ -837,7 +1048,9 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private fun teardownSpeech() {
         listenMode = "off"
+        hotword.stop()
         listenToken++
+        resumeMediaIfNeeded()
         stopCapture()
         destroyRecognizer()
     }
@@ -1062,6 +1275,54 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         try { recordRef?.stop() } catch (e: Exception) { /* ignore */ }
     }
 
+    /** Does the whisper URL actually speak Wyoming, or is it a dead endpoint?
+     *  A silent server made every command sound like the phone didn't hear
+     *  anything — record, stream, then "Read timed out" → no transcript. */
+    private fun whisperReachable(): Boolean {
+        if (whisperUrl.isBlank()) return false
+        val uri = try { URI(whisperUrl) } catch (e: Exception) { return false }
+        val host = uri.host ?: return false
+        val port = if (uri.port > 0) uri.port else 10300
+        val language = lang.substringBefore('-').lowercase()
+        val deadline = System.currentTimeMillis() + 4000
+        var sock: Socket? = null
+        try {
+            sock = Socket()
+            sock.connect(InetSocketAddress(host, port), 2500)
+            sock.soTimeout = 2500
+            val out = sock.getOutputStream()
+            val input = BufferedInputStream(sock.getInputStream())
+            fun send(json: String) { out.write((json + "\n").toByteArray(Charsets.UTF_8)); out.flush() }
+            fun readLine(): String? {
+                val sb = StringBuilder()
+                while (System.currentTimeMillis() < deadline) {
+                    val b = input.read() ?: return if (sb.isEmpty()) null else sb.toString()
+                    if (b == '\n'.code) return sb.toString()
+                    if (b != '\r'.code) sb.append(b.toChar())
+                }
+                return null
+            }
+            send("{\"type\":\"transcribe\",\"data\":{\"language\":\"$language\"}}")
+            send("{\"type\":\"audio-start\",\"data\":{\"rate\":16000,\"width\":2,\"channels\":1}}")
+            send("{\"type\":\"audio-stop\",\"data\":{}}")
+            while (System.currentTimeMillis() < deadline) {
+                val line = readLine() ?: break
+                if (line.isBlank()) continue
+                val ev = try { JSONObject(line) } catch (e: Exception) { continue }
+                val dataLen = ev.optInt("data_length", 0)
+                if (dataLen > 0) { val b = ByteArray(dataLen); var off = 0
+                    while (off < dataLen) { val r = input.read(b, off, dataLen - off); if (r < 0) break; off += r } }
+                val t = ev.getString("type")
+                if (t == "transcript" || t == "error") return true
+            }
+            return false
+        } catch (e: Exception) {
+            return false
+        } finally {
+            try { sock?.close() } catch (e: Exception) { /* ignore */ }
+        }
+    }
+
     private fun toBytes(buf: ShortArray, n: Int): ByteArray {
         val b = ByteArray(n * 2)
         for (i in 0 until n) {
@@ -1153,9 +1414,59 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     /* ═══════════ text-to-speech ═══════════ */
 
+    /* ═══════════ reply bubble over other apps ═══════════ */
+
+    private var overlayView: TextView? = null
+
+    private val hideOverlay = Runnable { overlayView?.visibility = View.GONE }
+
+    /** Show the reply on top of whatever app is in front (Spotify, YouTube…).
+     *  Needs the "display over other apps" permission; without it this is a
+     *  silent no-op and the in-app card still shows the text. */
+    private fun showOverlay(text: String) {
+        if (text.isBlank()) return
+        if (!Settings.canDrawOverlays(ctx)) return
+        mainHandler.post {
+            try {
+                val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                val tv = overlayView ?: TextView(ctx).apply {
+                    setTextColor(Color.WHITE)
+                    textSize = 16f
+                    setBackgroundColor(Color.parseColor("#E6000000"))
+                    setPadding(36, 24, 36, 24)
+                    maxWidth = 900
+                    val lp = WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                        PixelFormat.TRANSLUCENT
+                    ).apply {
+                        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                        y = 180
+                    }
+                    wm.addView(this, lp)
+                    overlayView = this
+                }
+                tv.text = text
+                tv.visibility = View.VISIBLE
+                mainHandler.removeCallbacks(hideOverlay)
+                mainHandler.postDelayed(hideOverlay, 8000)
+            } catch (e: Exception) {
+                Log.w(TAG, "[Overlay] failed: ${e.message}")
+            }
+        }
+    }
+
     private fun speak(requestId: String, p: JSONObject) {
         val text = p.optString("text", "").trim()
         if (text.isEmpty()) { resolve(requestId, true, "{}"); return }
+        showOverlay(text)
+        // The TTS engine takes exclusive audio focus, so every reply paused
+        // whatever was playing ("playing music" went silent the moment she
+        // confirmed it). Remember the state and resume when the talking ends.
+        if (!mediaWasPlaying) mediaWasPlaying = musicActive()
         if (p.has("rate")) speechRate = p.optDouble("rate", speechRate.toDouble()).toFloat().coerceIn(0.5f, 2.0f)
         if (p.has("pitch")) speechPitch = p.optDouble("pitch", speechPitch.toDouble()).toFloat().coerceIn(0.5f, 2.0f)
         val queue = p.optString("queue", "flush") == "add"
@@ -1164,6 +1475,22 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     var speechRate = 1.0f
     var speechPitch = 1.0f
+
+    /** Media was playing when speech started — resume it afterwards. */
+    @Volatile private var mediaWasPlaying = false
+
+    private fun resumeMediaIfNeeded() {
+        if (!mediaWasPlaying) return
+        mediaWasPlaying = false
+        io.execute {
+            Thread.sleep(500)
+            if (musicActive()) return@execute
+            mediaSessionBridge.play()
+            Thread.sleep(700)
+            if (!musicActive()) automationBridge.pressPlay()
+            Log.d(TAG, "[TTS] resumed media after speech (playing=${musicActive()})")
+        }
+    }
 
     private val utteranceIds = mutableMapOf<String, String>()
 
@@ -1321,10 +1648,12 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         override fun onDone(utteranceId: String?) {
             event("tts", JSONObject().put("type", "done"))
             utteranceIds.remove(utteranceId)?.let { resolve(it, true, "{}") }
+            resumeMediaIfNeeded()
         }
         @Deprecated("Deprecated in Java")
         override fun onError(utteranceId: String?) {
             event("tts", JSONObject().put("type", "error"))
+            resumeMediaIfNeeded()
             utteranceIds.remove(utteranceId)?.let { resolve(it, false, err("tts error")) }
         }
     }
@@ -1515,7 +1844,15 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     }
 
     private fun openApp(requestId: String, p: JSONObject) {
-        val raw = p.optString("query", "").lowercase().trim()
+        val q = p.optString("query", "").lowercase().trim()
+        // Greek recognizers transliterate app names ("σποτιφάι", "γιουτούμπ") —
+        // map the common ones back to the launcher label instead of failing.
+        val raw = when {
+            q.contains("σποτιφ") -> "spotify"
+            q.contains("γιουτιουμπ") || q.contains("γιουτιούμπ") || q.contains("γιου τιουμπ") -> "youtube"
+            q.contains("ινσταγκραμ") -> "instagram"
+            else -> q
+        }
         val pm = ctx.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val acts = pm.queryIntentActivities(intent, 0)
@@ -1602,11 +1939,123 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private fun youtube(requestId: String, p: JSONObject) {
         val q = p.optString("query", "").trim()
+        // A query means "play it", not "show me a list". The old behaviour
+        // opened the results page and stopped, which is why "play X" looked
+        // like she had only searched. `play:false` keeps search-only.
+        val play = p.optBoolean("play", q.isNotEmpty())
+        // The vnd.youtube results deep link opens the real results list; the
+        // https URL sometimes lands on the search suggestion overlay, which is
+        // what left her "stuck on the search tab".
         val uri = if (q.isEmpty())
             Uri.parse("https://www.youtube.com")
         else
-            Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q))
-        launch(requestId, Intent(Intent.ACTION_VIEW, uri), "youtube $q")
+            Uri.parse("vnd.youtube://results?search_query=" + Uri.encode(q))
+        val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            ctx.startActivity(intent)
+            Log.d(TAG, "[Intent] youtube $q")
+        } catch (e: Exception) {
+            resolve(requestId, false, err("nothing can open YouTube"))
+            return
+        }
+        if (!play || q.isEmpty()) {
+            resolve(requestId, true, JSONObject().put("launched", "youtube $q").toString())
+            return
+        }
+        // Results render asynchronously: wait, then tap the first matching
+        // result (scrolling if the list needs it). Resolve only once the tap
+        // happened, so the reply can say honestly whether it started playing.
+        io.execute {
+            var r: Map<String, Any?> = emptyMap()
+            for (i in 0 until 3) {
+                Thread.sleep(if (i == 0) 2800L else 2000L)
+                r = automationBridge.tapSearchResult(q)
+                if (r["ok"] == true) break
+            }
+            var ok = r["ok"] == true
+            // A tap that lands on the search box reports success but nothing
+            // starts. Only claim playback when audio is really running.
+            if (ok) {
+                Thread.sleep(1200)
+                if (!musicActive()) {
+                    val retry = automationBridge.tapSearchResult(q)
+                    if (retry["ok"] == true) Thread.sleep(1500)
+                    r = retry
+                }
+                ok = musicActive()
+            }
+            if (ok) mediaWasPlaying = true
+            Log.d(TAG, "[YouTube] autoplay '$q' → playing=$ok ${r["evidence"] ?: r["error"]}")
+            Diag.add("YouTube '$q' → ${r["evidence"] ?: r["error"]}")
+            resolve(requestId, true, JSONObject()
+                .put("query", q)
+                .put("playing", ok)
+                .put("evidence", r["evidence"] ?: r["error"] ?: "")
+                .toString())
+        }
+    }
+
+    /**
+     * "play despacito on spotify" — open Spotify's own search (deep link) and
+     * tap the first matching row, which starts playback. Media keys alone
+     * cannot choose a song, and sending the query to YouTube opened the wrong
+     * app entirely.
+     */
+    private fun spotify(requestId: String, p: JSONObject) {
+        val q = p.optString("query", "").trim()
+        val pkg = "com.spotify.music"
+        val intent = if (q.isEmpty())
+            ctx.packageManager.getLaunchIntentForPackage(pkg)
+        else
+            Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:" + Uri.encode(q))).setPackage(pkg)
+        if (intent == null) {
+            resolve(requestId, false, JSONObject().put("error", "spotify is not installed").toString())
+            return
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            ctx.startActivity(intent)
+        } catch (e: Exception) {
+            resolve(requestId, false, err("spotify launch failed: ${e.message}"))
+            return
+        }
+        if (q.isEmpty()) {
+            resolve(requestId, true, JSONObject().put("launched", "Spotify").toString())
+            return
+        }
+        Log.d(TAG, "[Spotify] search '$q'")
+        io.execute {
+            var r: Map<String, Any?> = emptyMap()
+            for (i in 0 until 3) {
+                // Spotify paints the search page before the result rows.
+                Thread.sleep(if (i == 0) 5500L else 2500L)
+                r = automationBridge.tapSearchResult(q, "spotify")
+                if (r["ok"] == true) break
+            }
+            var ok = r["ok"] == true
+            if (ok) mediaWasPlaying = true
+            // Opening a result can load the track without starting it; make
+            // sure audio is actually running before we claim it is playing.
+            if (ok) {
+                Thread.sleep(1500)
+                if (!musicActive()) {
+                    mediaSessionBridge.play()
+                    Thread.sleep(600)
+                }
+                if (!musicActive()) {
+                    automationBridge.pressPlay()
+                    Thread.sleep(800)
+                }
+                ok = musicActive()
+            }
+            Log.d(TAG, "[Spotify] play '$q' → playing=$ok ${r["evidence"] ?: r["error"]}")
+            Diag.add("Spotify '$q' → ${r["evidence"] ?: r["error"]}")
+            resolve(requestId, ok, JSONObject()
+                .put("query", q)
+                .put("playing", ok)
+                .put("evidence", r["evidence"] ?: r["error"] ?: "")
+                .toString())
+        }
     }
 
     private fun navigate(requestId: String, p: JSONObject) {
@@ -1624,8 +2073,18 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         }
     }
 
+    /** Is audio actually coming out of the music stream right now? */
+    private fun musicActive(): Boolean = try {
+        (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive
+    } catch (e: Exception) {
+        false
+    }
+
     private fun media(requestId: String, p: JSONObject) {
         val op = p.optString("op", "play")
+        // "Pause the music" must stay paused when she finishes the reply —
+        // don't let the after-speech resume undo the user's own command.
+        if (op == "pause") mediaWasPlaying = false
         val result = try {
             when (op) {
                 "play" -> mediaSessionBridge.play()
@@ -1639,7 +2098,18 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             Log.w(TAG, "[Media] session command $op failed: ${e.message}")
             false
         }
+        // A cold-opened player accepts the key but stays paused. Verify and, if
+        // it is still silent, press its own Play control.
+        if (result && (op == "play" || op == "toggle")) {
+            Thread.sleep(600)
+            if (!musicActive()) {
+                val tap = automationBridge.pressPlay()
+                Log.d(TAG, "[Media] key ignored, tapped Play → $tap")
+                Thread.sleep(600)
+            }
+        }
         if (result) {
+            if (op == "play" || op == "toggle") mediaWasPlaying = true
             Log.d(TAG, "[Media] $op via session")
             resolve(requestId, true, JSONObject().put("op", op).put("session", true).toString())
         } else {
@@ -1669,6 +2139,9 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private fun haPrefs() = ctx.getSharedPreferences("pal_ha", Context.MODE_PRIVATE)
 
+    /** Backoff after HA bans this phone: skip network calls until this time. */
+    @Volatile private var haBannedUntil = 0L
+
     /**
      * Home Assistant bridge. Actions:
      *   config  {url, token}          → save (empty token keeps the stored one)
@@ -1682,11 +2155,21 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         when (p.optString("action", "call")) {
             "config" -> {
                 val e = haPrefs().edit()
-                if (p.has("url")) e.putString("url", p.optString("url").trim().trimEnd('/'))
-                if (p.has("token") && p.optString("token").isNotBlank()) e.putString("token", p.optString("token").trim())
+                if (p.has("url")) e.putString("url", haNormalizeUrl(p.optString("url")))
+                if (p.has("token") && p.optString("token").isNotBlank()) {
+                    // A pasted long-lived token never expires: drop any old session.
+                    e.putString("token", p.optString("token").trim())
+                    e.remove("refresh")
+                    e.putLong("expires", 0L)
+                }
                 e.apply()
+                haStatesCache = null   // new server/token: drop cached entities
+                haBannedUntil = 0L     // user reconfigured: allow retry
                 resolve(requestId, true, haConfigJson())
             }
+            "test" -> io.execute { haTest(requestId) }
+            "login" -> io.execute { haLogin(requestId, p) }
+            "discover" -> haDiscover(requestId)
             "states" -> io.execute { haStates(requestId) }
             "call" -> io.execute { haCall(requestId, p) }
             else -> resolve(requestId, false, err("unknown ha action"))
@@ -1696,10 +2179,258 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private fun haConfigJson(): String = JSONObject()
         .put("url", haPrefs().getString("url", "") ?: "")
         .put("hasToken", !(haPrefs().getString("token", "") ?: "").isBlank())
+        .put("signedIn", !(haPrefs().getString("refresh", "") ?: "").isBlank())
         .toString()
 
+    /** Entity list kept for a minute: every command used to download all
+     *  states first, which was the slow part. */
+    private data class HaCache(val at: Long, val json: JSONArray)
+    @Volatile private var haStatesCache: HaCache? = null
+
+    private fun haStatesRaw(base: String, force: Boolean = false): JSONArray {
+        val c = haStatesCache
+        if (!force && c != null && System.currentTimeMillis() - c.at < 60_000) return c.json
+        val now = System.currentTimeMillis()
+        if (now < haBannedUntil) throw IllegalStateException("home assistant has banned ${localIp()} (retry in ${((haBannedUntil - now) / 60000 + 1)} min)")
+        var conn: HttpURLConnection? = null
+        try {
+            conn = haConn("$base/api/states", "GET", null)
+            val code = conn.responseCode
+            if (code == 403) { haBannedUntil = System.currentTimeMillis() + 30L * 60 * 1000; throw IllegalStateException("Home Assistant has banned ${localIp()}. Clear ip_bans.yaml or change the phone's IP, then restart HA.") }
+            if (code !in 200..299) throw IllegalStateException("home assistant answered $code")
+            val arr = JSONArray(haRead(conn))
+            haStatesCache = HaCache(System.currentTimeMillis(), arr)
+            return arr
+        } finally { try { conn?.disconnect() } catch (e: Exception) { } }
+    }
+
+    /** Find the Home Assistant server on the local network (zeroconf), so the
+     *  URL never has to be typed — the companion app uses the same record. */
+    private fun haDiscover(requestId: String) {
+        val nsd = ctx.getSystemService(Context.NSD_SERVICE) as android.net.nsd.NsdManager
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        var listener: android.net.nsd.NsdManager.DiscoveryListener? = null
+        var timeout: Runnable? = null
+
+        fun finish(ok: Boolean, payload: String?) {
+            if (!done.compareAndSet(false, true)) return
+            try { listener?.let { nsd.stopServiceDiscovery(it) } } catch (e: Exception) { }
+            timeout?.let { mainHandler.removeCallbacks(it) }
+            if (ok) resolve(requestId, true, payload ?: "{}")
+            else resolve(requestId, false, err(payload ?: "home assistant not found"))
+        }
+
+        listener = object : android.net.nsd.NsdManager.DiscoveryListener {
+            override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) =
+                finish(false, "zeroconf blocked (error $errorCode)")
+            override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) { }
+            override fun onDiscoveryStarted(serviceType: String?) { }
+            override fun onDiscoveryStopped(serviceType: String?) { }
+            override fun onServiceLost(info: android.net.nsd.NsdServiceInfo?) { }
+            override fun onServiceFound(info: android.net.nsd.NsdServiceInfo) {
+                if (done.get()) return
+                try {
+                    nsd.resolveService(info, object : android.net.nsd.NsdManager.ResolveListener {
+                        override fun onResolveFailed(i: android.net.nsd.NsdServiceInfo?, errorCode: Int) { }
+                        override fun onServiceResolved(r: android.net.nsd.NsdServiceInfo) {
+                            if (done.get()) return
+                            val host = r.host?.hostAddress ?: return
+                            val url = "http://$host:${r.port}"
+                            val e = haPrefs().edit()
+                            if ((haPrefs().getString("url", "") ?: "").isBlank()) e.putString("url", url)
+                            e.apply()
+                            haStatesCache = null
+                            Diag.add("home assistant found at $url")
+                            finish(true, JSONObject().put("url", url).put("name", r.serviceName).toString())
+                        }
+                    })
+                } catch (e: Exception) { /* keep listening */ }
+            }
+        }
+
+        timeout = Runnable { finish(false, "not found in 6 s — type the IP instead") }
+        mainHandler.postDelayed(timeout, 6500)
+        try {
+            nsd.discoverServices("_home-assistant._tcp", android.net.nsd.NsdManager.PROTOCOL_DNS_SD, listener)
+        } catch (e: Exception) {
+            finish(false, e.message ?: "discovery failed")
+        }
+    }
+
+    /** "homeassistant.local:8123" → "http://homeassistant.local:8123"; strip /api and slashes. */
+    private fun haNormalizeUrl(raw: String): String {
+        var u = raw.trim().trimEnd('/')
+        if (u.isBlank()) return ""
+        if (!u.startsWith("http://") && !u.startsWith("https://")) u = "http://$u"
+        if (u.endsWith("/api")) u = u.removeSuffix("/api")
+        return u
+    }
+
+    /** This phone's LAN address, so an HA ban notice can name the right IP. */
+    private fun localIp(): String {
+        return try {
+            java.net.NetworkInterface.getNetworkInterfaces().toList()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.toList() }
+                .filterIsInstance<java.net.Inet4Address>()
+                .firstOrNull { it.isSiteLocalAddress }
+                ?.hostAddress ?: "this phone"
+        } catch (e: Exception) { "this phone" }
+    }
+
+    /**
+     * Sign in with the account that is already on the phone's Home Assistant:
+     * POST /auth/login_flow → /auth/login_flow/{id} → /auth/token, then keep
+     * the access token fresh with the refresh token. No token copying needed.
+     */
+    private fun haLogin(requestId: String, p: JSONObject) {
+        val base = haPrefs().getString("url", "") ?: ""
+        if (base.isBlank()) { resolve(requestId, false, err("find the server first")); return }
+        val user = p.optString("username", "").trim()
+        val pass = p.optString("password", "")
+        if (user.isBlank() || pass.isBlank()) { resolve(requestId, false, err("username and password required")); return }
+        val clientId = "$base/"
+        try {
+            val flow = haPost("$base/auth/login_flow", JSONObject()
+                .put("client_id", clientId)
+                // HA expects the handler as [name, extra], not a bare string.
+                .put("handler", JSONArray().put("homeassistant").put(JSONObject.NULL))
+                .put("redirect_uri", clientId))
+            val flowId = flow.optString("flow_id")
+            if (flowId.isBlank()) { resolve(requestId, false, err("login flow refused")); return }
+            val step = haPost("$base/auth/login_flow/$flowId", JSONObject()
+                .put("client_id", clientId).put("username", user).put("password", pass))
+            val type = step.optString("type")
+            if (type == "form" && step.optJSONObject("errors") != null) {
+                val msg = step.optJSONObject("errors")?.keys()?.asSequence()?.joinToString() ?: "login rejected"
+                resolve(requestId, false, err("login rejected: $msg")); return
+            }
+            if (type != "create_entry") {
+                val fields = step.optJSONArray("step")?.toString() ?: ""
+                resolve(requestId, false, err("extra step needed (2FA?) $fields".trim())); return
+            }
+            val code = step.optString("result")
+            val tok = haPost("$base/auth/token", JSONObject()
+                .put("grant_type", "authorization_code").put("code", code).put("client_id", clientId))
+            storeHaTokens(tok)
+            Diag.add("home assistant: signed in")
+            resolve(requestId, true, JSONObject().put("signedIn", true).toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "[HA] login failed: ${e.message}")
+            resolve(requestId, false, err(e.message ?: "login failed"))
+        }
+    }
+
+    private fun storeHaTokens(tok: JSONObject) {
+        val access = tok.optString("access_token", "")
+        val e = haPrefs().edit()
+        if (access.isNotBlank()) e.putString("token", access)
+        val refresh = tok.optString("refresh_token", "")
+        if (refresh.isNotBlank()) e.putString("refresh", refresh)
+        val ttl = tok.optLong("expires_in", 0L)
+        e.putLong("expires", if (ttl > 0) System.currentTimeMillis() + ttl * 1000 else 0L)
+        e.apply()
+    }
+
+    /** Access token, refreshed with the stored refresh token when it is old. */
+    private fun haAccessToken(force: Boolean = false): String {
+        val p = haPrefs()
+        val tok = p.getString("token", "") ?: ""
+        val exp = p.getLong("expires", 0L)
+        val refresh = p.getString("refresh", "") ?: ""
+        if (!force && tok.isNotBlank() && (exp == 0L || System.currentTimeMillis() < exp - 60_000)) return tok
+        if (refresh.isBlank()) return tok
+        synchronized(this) {
+            val p2 = haPrefs()
+            val tok2 = p2.getString("token", "") ?: ""
+            val exp2 = p2.getLong("expires", 0L)
+            if (!force && tok2.isNotBlank() && (exp2 == 0L || System.currentTimeMillis() < exp2 - 60_000)) return tok2
+            val base = p2.getString("url", "") ?: ""
+            if (base.isBlank()) return tok2
+            return try {
+                val t = haPost("$base/auth/token", JSONObject()
+                    .put("grant_type", "refresh_token").put("refresh_token", refresh)
+                    .put("client_id", "$base/"))
+                storeHaTokens(t)
+                t.optString("access_token", tok2)
+            } catch (e: Exception) {
+                Log.w(TAG, "[HA] token refresh failed: ${e.message}")
+                tok2
+            }
+        }
+    }
+
+    private fun haPost(url: String, body: JSONObject): JSONObject {
+        var conn: HttpURLConnection? = null
+        try {
+            conn = URL(url).openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 5000
+            conn.readTimeout = 10_000
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+            val code = conn.responseCode
+            val txt = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.let { BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() } } ?: ""
+            if (code == 403) {
+                haBannedUntil = System.currentTimeMillis() + 30L * 60 * 1000
+                throw IllegalStateException("Home Assistant has banned ${localIp()}. Clear ip_bans.yaml or change the phone's IP, then restart HA.")
+            }
+            if (code !in 200..299) throw IllegalStateException("home assistant answered $code ${txt.take(120)}")
+            return JSONObject(txt)
+        } finally { try { conn?.disconnect() } catch (e: Exception) { } }
+    }
+
+    /** Settings "Test": proves the URL + token work and reports what HA knows. */
+    private fun haTest(requestId: String) {
+        val base = haPrefs().getString("url", "") ?: ""
+        if (base.isBlank()) { resolve(requestId, false, err("home assistant url not set")); return }
+        if (haAccessToken().isBlank()) {
+            resolve(requestId, false, err("not signed in — enter your Home Assistant account")); return
+        }
+        var conn: HttpURLConnection? = null
+        try {
+            conn = haConn("$base/api/", "GET", null)
+            val code = conn.responseCode
+            if (code == 401) {
+                resolve(requestId, false, err("token rejected — create a new long-lived token")); return
+            }
+            if (code == 403) {
+                haBannedUntil = System.currentTimeMillis() + 30L * 60 * 1000
+                // HA answers 403 to *everything* from a banned address, so this is
+                // never a token problem — say what actually fixes it.
+                resolve(requestId, false, err("Home Assistant has banned ${localIp()}. Fix: (1) delete that IP's entry in ip_bans.yaml and restart HA, or (2) change the phone's Wi-Fi IP, or (3) set ip_ban_enabled: false in configuration.yaml.")); return
+            }
+            if (code !in 200..299) {
+                resolve(requestId, false, err("home assistant answered $code")); return
+            }
+            haRead(conn); conn.disconnect(); conn = null
+            val arr = haStatesRaw(base, force = true)
+            val sample = JSONArray()
+            var lights = 0
+            for (i in 0 until arr.length()) {
+                val st = arr.getJSONObject(i)
+                val id = st.optString("entity_id")
+                if (id.startsWith("light.") || id.startsWith("switch.")) lights++
+                if (sample.length() < 6 &&
+                    (id.startsWith("light.") || id.startsWith("switch.") || id.startsWith("climate."))) {
+                    val nm = (st.optJSONObject("attributes") ?: JSONObject()).optString("friendly_name", id)
+                    sample.put(nm)
+                }
+            }
+            resolve(requestId, true, JSONObject()
+                .put("url", base).put("entities", arr.length()).put("controllable", lights)
+                .put("sample", sample).toString())
+        } catch (e: java.net.UnknownHostException) {
+            resolve(requestId, false, err("cannot find ${base.removePrefix("http://").removePrefix("https://").substringBefore("/").substringBefore(":")} — use the home assistant IP, e.g. http://192.168.1.50:8123"))
+        } catch (e: Exception) {
+            resolve(requestId, false, err(e.message ?: "home assistant unreachable"))
+        } finally { try { conn?.disconnect() } catch (e: Exception) { } }
+    }
+
     private fun haConn(url: String, method: String, body: String?): HttpURLConnection {
-        val token = haPrefs().getString("token", "") ?: ""
+        val token = haAccessToken()
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 5000
@@ -1719,13 +2450,8 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private fun haStates(requestId: String) {
         val base = haPrefs().getString("url", "") ?: ""
         if (base.isBlank()) { resolve(requestId, false, err("home assistant not configured")); return }
-        var conn: HttpURLConnection? = null
         try {
-            conn = haConn("$base/api/states", "GET", null)
-            if (conn.responseCode !in 200..299) {
-                resolve(requestId, false, err("home assistant answered ${conn.responseCode}")); return
-            }
-            val arr = JSONArray(haRead(conn))
+            val arr = haStatesRaw(base)
             val out = JSONArray()
             for (i in 0 until arr.length()) {
                 val st = arr.getJSONObject(i)
@@ -1742,12 +2468,14 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         } catch (e: Exception) {
             Log.w(TAG, "[HA] states failed: ${e.message}")
             resolve(requestId, false, err(e.message ?: "home assistant unreachable"))
-        } finally { try { conn?.disconnect() } catch (e: Exception) { } }
+        }
     }
 
     private fun haCall(requestId: String, p: JSONObject) {
         val base = haPrefs().getString("url", "") ?: ""
         if (base.isBlank()) { resolve(requestId, false, err("home assistant not configured")); return }
+        val now = System.currentTimeMillis()
+        if (now < haBannedUntil) { resolve(requestId, false, err("home assistant has banned ${localIp()} (retry in ${((haBannedUntil - now) / 60000 + 1)} min). Clear ip_bans.yaml or use a different phone IP.")); return }
         val domain = p.optString("domain", "light")
         val service = p.optString("service", "turn_on")
         val target = p.optString("target", "").trim()
@@ -1760,31 +2488,53 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 // Panel toggles pass the exact entity — no name matching.
                 ids.put(single)
             } else if (target.isNotBlank() || service == "set_temperature") {
-                conn = haConn("$base/api/states", "GET", null)
-                if (conn.responseCode !in 200..299) {
-                    resolve(requestId, false, err("home assistant answered ${conn.responseCode}")); return
-                }
-                val arr = JSONArray(haRead(conn))
-                conn.disconnect(); conn = null
+                val arr = haStatesRaw(base)
                 val needle = haNormalize(target)
+                // Most wall switches here are Sonoff *switches*, not light.* entities,
+                // so a named light also searches switches. Unnamed "all lights"
+                // stays inside the requested domain — otherwise it would flip
+                // every plug in the house.
+                val domains = if (target.isBlank()) setOf(domain) else when (domain) {
+                    "light" -> setOf("light", "switch", "input_boolean")
+                    "switch" -> setOf("switch", "light", "input_boolean")
+                    "cover" -> setOf("cover", "switch")
+                    else -> setOf(domain)
+                }
+                val exact = JSONArray()
+                val loose = JSONArray()
                 for (i in 0 until arr.length()) {
                     val st = arr.getJSONObject(i)
                     val id = st.optString("entity_id")
-                    if (!id.startsWith("$domain.")) continue
+                    val dom = id.substringBefore('.', "")
+                    if (dom !in domains) continue
                     if (target.isBlank()) { ids.put(id); continue }
                     val attrs = st.optJSONObject("attributes") ?: JSONObject()
                     val name = haNormalize(attrs.optString("friendly_name", id))
-                    if (name.contains(needle) || needle.contains(name)) ids.put(id)
+                    // "bedroom" must not also hit "parent bedroom": exact names win.
+                    when {
+                        name == needle || haNormalize(id) == needle -> exact.put(id)
+                        name.contains(needle) || needle.contains(name) || haNormalize(id).contains(needle) -> loose.put(id)
+                    }
+                }
+                if (exact.length() > 0) {
+                    for (i in 0 until exact.length()) ids.put(exact.getString(i))
+                } else {
+                    for (i in 0 until loose.length()) ids.put(loose.getString(i))
                 }
                 if (ids.length() == 0) {
                     resolve(requestId, false, err("no $domain matched \"$target\"")); return
                 }
+                Diag.add("home assistant: $domain.$service → ${ids.length()} entity(ies) for \"$target\"")
             }
             val body = JSONObject()
             if (ids.length() > 0) body.put("entity_id", ids)
             if (service == "set_temperature") body.put("temperature", p.optInt("value", 21))
             conn = haConn("$base/api/services/$domain/$service", "POST", body.toString())
             val code = conn.responseCode
+            if (code == 403) {
+                haBannedUntil = System.currentTimeMillis() + 30L * 60 * 1000
+                resolve(requestId, false, err("Home Assistant has banned ${localIp()}. Clear ip_bans.yaml or change the phone's IP, then restart HA.")); return
+            }
             if (code !in 200..299) {
                 val msg = try { conn.errorStream?.readBytes()?.decodeToString() ?: "" } catch (e: Exception) { "" }
                 resolve(requestId, false, err("home assistant answered $code ${msg.take(120)}")); return
@@ -1816,6 +2566,12 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     }
 
     private fun automationBlocking(requestId: String, p: JSONObject) {
+        // The panel sends {method, payload:{...}} (nested), but the methods below
+        // read query/target/text from the top-level object. Without this every call
+        // got an empty payload and resolveApp("") matched the first app in the launcher
+        // list, so "open youtube" always opened Gallery. Read from the nested payload,
+        // falling back to the outer object for flat {method, query} calls.
+        val p = p.optJSONObject("payload") ?: p
         val method = p.optString("method", "")
         val result = try {
             when (method) {
@@ -1833,7 +2589,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 "snapshot" -> {
                     val r: Map<String, Any?> = automationBridge.snapshot()
                     val arr = JSONArray()
-                    (r["elements"] as? List<Map<String, Any?>> ?: emptyList()).forEach { arr.put(JSONObject(it.toString())) }
+                    (r["elements"] as? List<Map<String, Any?>> ?: emptyList()).forEach { arr.put(mapToJsonObject(it)) }
                     JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject().put("elements", arr).put("topPackage", r["topPackage"]))
                 }
                 "tapLabel" -> {
@@ -1865,15 +2621,15 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                             val o = arr.optJSONObject(i) ?: JSONObject()
                             mapOf(
                                 "action" to o.optString("action", ""),
-                                "target" to o.optString("target", null),
-                                "text" to o.optString("text", null)
+                                "target" to o.opt("target")?.toString(),
+                                "text" to o.opt("text")?.toString()
                             )
                         }
                     } else emptyList<Map<String, String?>>()
                     val r: Map<String, Any?> = automationBridge.runTask(taskId, steps)
                     val results = (r["results"] as? List<Map<String, Any?>> ?: emptyList())
                     val resultsArr = JSONArray()
-                    results.forEach { resultsArr.put(JSONObject(it.toString())) }
+                    results.forEach { resultsArr.put(mapToJsonObject(it)) }
                     JSONObject().put("ok", (r["ok"] as? Boolean ?: false)).put("result", JSONObject().put("stoppedAt", r["stoppedAt"]).put("results", resultsArr))
                 }
                 else -> JSONObject().put("ok", false).put("error", "unknown automation method: $method")
@@ -1966,7 +2722,44 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private val BatteryManagerExtra_LEVEL = "level"
     private val BatteryManagerExtra_SCALE = "scale"
 
+    /** What the app still needs the user to switch on, from the phone itself. */
+    private fun setupJson(): String {
+        val a11yOn = try {
+            val am = ctx.getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+            (android.provider.Settings.Secure.getInt(
+                ctx.contentResolver, android.provider.Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1) &&
+                am.isEnabled &&
+                (android.provider.Settings.Secure.getString(
+                    ctx.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: "")
+                    .contains(ctx.packageName)
+        } catch (e: Exception) { false }
+        return JSONObject()
+            .put("accessibility", a11yOn)
+            .put("overlay", Settings.canDrawOverlays(ctx))
+            .toString()
+    }
+
+    /** Open whichever phone setting is still missing (no computer needed). */
+    private fun openSetupSettings(requestId: String) {
+        try {
+            val i = if (!Settings.canDrawOverlays(ctx)) {
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + ctx.packageName))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            } else {
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(i)
+            resolve(requestId, true, "{}")
+        } catch (e: Exception) {
+            resolve(requestId, false, err(e.message ?: "cannot open settings"))
+        }
+    }
+
     private fun statusJson(): String {
+        // The page asks for status on every start: a good moment to unpack the
+        // hotword model in the background instead of when music first plays.
+        try { hotword.prepare() } catch (e: Exception) { /* engine logs it */ }
         val am = if (Build.VERSION.SDK_INT >= 31)
             (ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager).canScheduleExactAlarms() else true
         return JSONObject()
@@ -2042,7 +2835,12 @@ private class WyomingAsr(private val endpoint: String, langTag: String) {
     /** Close the utterance and wait for the transcript. */
     fun finish(): String? {
         send("{\"type\":\"audio-stop\",\"data\":{}}")
-        val deadline = System.currentTimeMillis() + 8000
+        // CPU whisper can take many seconds to transcribe a full sentence; an
+        // 8 s read deadline cut it off mid-flight ("Read timed out" → no
+        // transcript → "I didn't hear that"). Bump the socket timeout and the
+        // overall deadline so a slow turn still lands.
+        try { sock.soTimeout = 30000 } catch (e: Exception) { /* ignore */ }
+        val deadline = System.currentTimeMillis() + 28000
         while (System.currentTimeMillis() < deadline) {
             val line = readLine() ?: break
             if (line.isBlank()) continue

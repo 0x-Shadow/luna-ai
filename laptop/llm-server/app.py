@@ -23,7 +23,7 @@ from flask import Flask, send_from_directory
 from flask_socketio import SocketIO
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "pal9000-secret"
+app.config["SECRET_KEY"] = os.environ.get("PAL_SECRET_KEY", os.urandom(24).hex())
 # cors_allowed_origins="*" allows Termux client (port 8000) to connect
 socketio = SocketIO(app, cors_allowed_origins="*")
 

@@ -13,6 +13,8 @@ import kotlin.jvm.Volatile
 
 class AutomationBridge(private val ctx: Context) {
 
+    companion object { private const val TAG = "PAL9000" }
+
     private val pm = ctx.packageManager
     private val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
@@ -29,7 +31,19 @@ class AutomationBridge(private val ctx: Context) {
     }
 
     private fun resolveApp(query: String): String? {
-        val raw = query.lowercase().trim()
+        val spoken = query.lowercase().trim()
+        // An empty query (panel sent an unparseable payload) used to fall through
+        // to startsWith("") and match the first app in the launcher list — every
+        // "open X" silently opened the same wrong app.
+        if (spoken.isEmpty()) return null
+        // Greek recognizers return the app name transliterated; map the common
+        // ones back to the launcher label instead of failing to match.
+        val raw = when {
+            spoken.contains("σποτιφ") -> "spotify"
+            spoken.contains("γιουτιουμπ") || spoken.contains("γιουτιούμπ") || spoken.contains("γιου τιουμπ") -> "youtube"
+            spoken.contains("ινσταγκραμ") -> "instagram"
+            else -> spoken
+        }
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val acts = pm.queryIntentActivities(intent, 0)
         val labels = acts.map { it to (it.loadLabel(pm)?.toString() ?: "").lowercase() }
@@ -82,21 +96,28 @@ class AutomationBridge(private val ctx: Context) {
 
     fun snapshot(): Map<String, Any?> {
         val svc = LoonaAccessibilityService.instance
-        val root = svc?.rootNode ?: return mapOf(
+        // Prefer a fresh window: between events (or right after an app launches)
+        // the cached rootNode is stale, and tapLabel's verifyEffect compares
+        // element counts — a stale snapshot made every tap look like a no-op.
+        val fresh = svc?.requestSnapshot()
+        val root = fresh ?: svc?.rootNode ?: return mapOf(
             "ok" to false, "error" to "accessibility service not running",
-            "elements" to emptyList<Map<String, Any?>>()
+            "elements" to emptyList<Map<String, Any>>()
         )
+        Log.d(TAG, "[Automation] snapshot ok: instance=${svc != null} fresh=${fresh != null} cached=${svc?.rootNode != null} topPkg=${root.packageName} children=${root.childCount}")
         val entries = mutableListOf<Map<String, Any?>>()
         collect(root, entries)
         return mapOf(
             "ok" to true,
             "elements" to entries,
-            "topPackage" to svc.rootNode?.packageName
+            "topPackage" to svc?.rootNode?.packageName
         )
     }
 
-    private fun collect(n: AccessibilityNodeInfo, out: MutableList<Map<String, Any?>>, depth: Int = 0) {
-        if (depth > 100) return
+    private fun collect(n: AccessibilityNodeInfo?, out: MutableList<Map<String, Any?>>, depth: Int = 0) {
+        // getChild() returns null for nodes that vanish mid-walk; a non-null
+        // parameter here turned that into a process-killing NPE.
+        if (n == null || depth > 100) return
         try {
             val text = n.text?.toString()?.trim()
             val desc = n.contentDescription?.toString()?.trim()
@@ -116,9 +137,10 @@ class AutomationBridge(private val ctx: Context) {
             for (i in 0 until childCount) {
                 n.getChild(i)?.let { collect(it, out, depth + 1) }
             }
-        } finally {
-            n.recycle()
-        }
+        } catch (e: Exception) { /* ignore */ }
+        // Never recycle the root: snapshot() hands it to findElement()/tapLabel()
+        // afterwards, and a recycled node crashes or returns nothing. Child nodes
+        // are small and GC'd; the root is recycled when requestSnapshot() replaces it.
     }
 
     private fun boundsToList(n: AccessibilityNodeInfo): List<Int> {
@@ -134,7 +156,7 @@ class AutomationBridge(private val ctx: Context) {
         return findExact(root, want) ?: findContains(root, want)
     }
 
-    private fun findExact(n: AccessibilityNodeInfo, want: String): AccessibilityNodeInfo? {
+    private fun findExact(n: AccessibilityNodeInfo?, want: String): AccessibilityNodeInfo? {
         if (n == null) return null
         val text = (n.text?.toString() ?: "").lowercase()
         val desc = (n.contentDescription?.toString() ?: "").lowercase()
@@ -147,7 +169,7 @@ class AutomationBridge(private val ctx: Context) {
         return null
     }
 
-    private fun findContains(n: AccessibilityNodeInfo, want: String): AccessibilityNodeInfo? {
+    private fun findContains(n: AccessibilityNodeInfo?, want: String): AccessibilityNodeInfo? {
         if (n == null) return null
         val text = (n.text?.toString() ?: "").lowercase()
         val desc = (n.contentDescription?.toString() ?: "").lowercase()
@@ -181,6 +203,195 @@ class AutomationBridge(private val ctx: Context) {
         } catch (e: Exception) {
             return mapOf("ok" to false, "error" to "tap failed: ${e.message}")
         }
+    }
+
+    /**
+     * Press the player's own Play button. Spotify keeps its media session
+     * paused when it is cold-opened and silently ignores media keys, so
+     * "play music" left it sitting on the home screen with nothing playing.
+     */
+    fun pressPlay(): Map<String, Any?> {
+        val svc = LoonaAccessibilityService.instance
+            ?: return mapOf("ok" to false, "error" to "accessibility service not running")
+        val root = svc.requestSnapshot() ?: svc.rootNode
+            ?: return mapOf("ok" to false, "error" to "no screen content")
+        val pkg = root.packageName?.toString() ?: ""
+        if (!pkg.contains("spotify") && !pkg.contains("music") && !pkg.contains("youtube")) {
+            return mapOf("ok" to false, "error" to "not a media app: $pkg")
+        }
+        for (label in listOf("play", "αναπαραγωγή", "resume")) {
+            val node = findElement(label) ?: continue
+            try {
+                if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    return mapOf("ok" to true, "label" to label, "pkg" to pkg)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "[Automation] play tap failed: ${e.message}")
+            }
+        }
+        return mapOf("ok" to false, "error" to "no play control in $pkg")
+    }
+
+    /* ── search results: "play X on YouTube" has to actually start something ── */
+
+    /** Labels that belong to app chrome, never to a search result. */
+    private val chromeLabels = setOf(
+        "home", "shorts", "subscriptions", "subscribed", "search", "create", "you",
+        "library", "explore", "notifications", "menu", "back", "filter", "voice search",
+        "trending", "music", "gaming", "news", "settings", "sign in", "share", "cast"
+    )
+
+    private fun nodeLabel(n: AccessibilityNodeInfo): String =
+        (n.text?.toString()?.takeIf { it.isNotBlank() } ?: n.contentDescription?.toString() ?: "").trim()
+
+    /**
+     * Tap the first result that matches the search query, scrolling the list
+     * when nothing on screen matches. Used right after a YouTube search so the
+     * command plays something instead of leaving a list of results open.
+     */
+    fun tapSearchResult(query: String, pkgHint: String = "youtube"): Map<String, Any?> {
+        val svc = LoonaAccessibilityService.instance
+            ?: return mapOf("ok" to false, "error" to "accessibility service not running")
+        val tokens = query.lowercase()
+            .split(Regex("[^\\p{L}\\p{N}]+"))
+            .filter { it.length >= 3 && it !in chromeLabels }
+        var reason = "no result matched '$query'"
+        // Results can sit below a full-screen ad; keep scrolling and looking.
+        for (attempt in 0 until 5) {
+            val root = svc.requestSnapshot() ?: svc.rootNode
+                ?: return mapOf("ok" to false, "error" to "no screen content")
+            // Only tap inside the expected app: the search intent may have
+            // landed in a browser, where the "first result" is a random link.
+            val pkg = root.packageName?.toString() ?: ""
+            if (!pkg.contains(pkgHint, ignoreCase = true)) {
+                return mapOf("ok" to false, "error" to "top window is $pkg, not $pkgHint")
+            }
+            // YouTube sometimes lands on the autocomplete list instead of
+            // results. Pick a suggestion (that runs the search) and look again
+            // on the next pass instead of tapping the search box.
+            val suggestion = findSuggestion(root)
+            if (suggestion != null) {
+                suggestion.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                Thread.sleep(2500)
+                continue
+            }
+            // Match the actual title first and keep scrolling until it shows
+            // up. Blindly tapping the first row played unrelated videos (the
+            // top of the list is an ad plus "recommended" filler).
+            val youtube = pkg.contains("youtube", ignoreCase = true)
+            val target = findResultNode(root, tokens)
+                ?: (if (youtube && attempt >= 3) findPlayableRow(root) else null)
+                ?: (if (!youtube) findVideoRow(root) else null)
+            if (target != null) {
+                val label = nodeLabel(target)
+                val clicked = try {
+                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                } catch (e: Exception) { false }
+                if (clicked) {
+                    Thread.sleep(700)
+                    return mapOf(
+                        "ok" to true,
+                        "label" to label,
+                        "evidence" to ("tapped: " + label.take(80))
+                    )
+                }
+                reason = "click rejected on \"${label.take(60)}\""
+            }
+            val scroller = findScrollable(root) ?: break
+            scroller.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            Thread.sleep(1200)
+        }
+        return mapOf("ok" to false, "error" to reason)
+    }
+
+    /** Node whose text/description contains one of the query words, promoted to
+     *  its nearest clickable ancestor (a result row's title is not clickable). */
+    private fun findResultNode(n: AccessibilityNodeInfo?, tokens: List<String>): AccessibilityNodeInfo? {
+        if (n == null) return null
+        // Never match the search box: its text IS the query, so it looks like a
+        // perfect result and the "tap" just focuses an empty field (Spotify
+        // then kept playing whatever was already queued).
+        val cls = n.className?.toString() ?: ""
+        val isSearchBox = cls.contains("EditText", ignoreCase = true) || n.isEditable
+        val label = nodeLabel(n).lowercase()
+        val isSuggestion = label.contains("suggestion")
+        // Results start below the toolbar; the search bar itself sits up top
+        // and carries the query as its text, so it always looks like a match.
+        val r = android.graphics.Rect()
+        n.getBoundsInScreen(r)
+        val inToolbar = r.top < 180
+        if (!isSearchBox && !isSuggestion && !inToolbar && label.length >= 6 && tokens.isNotEmpty() &&
+            tokens.any { label.contains(it) } && label !in chromeLabels
+        ) {
+            clickableAncestor(n)?.let { return it }
+        }
+        for (i in 0 until n.childCount) {
+            findResultNode(n.getChild(i), tokens)?.let { return it }
+        }
+        return null
+    }
+
+    /** A clickable autocomplete row ("Edit suggestion despacito"). */
+    private fun findSuggestion(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (n == null) return null
+        val desc = (n.contentDescription?.toString() ?: "").lowercase()
+        if (desc.contains("suggestion") && n.isClickable) return n
+        for (i in 0 until n.childCount) {
+            findSuggestion(n.getChild(i))?.let { return it }
+        }
+        return null
+    }
+
+    private fun clickableAncestor(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var cur: AccessibilityNodeInfo? = n
+        var depth = 0
+        while (cur != null && depth < 8) {
+            if (cur.isClickable) return cur
+            cur = try { cur.parent } catch (e: Exception) { null }
+            depth++
+        }
+        return null
+    }
+
+    /** YouTube result rows announce themselves as "… – play video"; skip ads. */
+    private fun findPlayableRow(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (n == null) return null
+        val desc = (n.contentDescription?.toString() ?: "").lowercase()
+        if (desc.contains("play video") && !desc.contains("sponsored") &&
+            !desc.contains("advertisement")
+        ) {
+            return clickableAncestor(n) ?: n
+        }
+        for (i in 0 until n.childCount) {
+            findPlayableRow(n.getChild(i))?.let { return it }
+        }
+        return null
+    }
+
+    /** Last resort: a clickable row with a long label — a YouTube result tile's
+     *  contentDescription is "title, channel, views…"; chrome labels are short. */
+    private fun findVideoRow(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (n == null) return null
+        if (n.isClickable) {
+            val label = nodeLabel(n)
+            val low = label.lowercase()
+            if (label.length >= 20 && low !in chromeLabels &&
+                !low.contains("sponsored") && !low.contains("advertisement")
+            ) return n
+        }
+        for (i in 0 until n.childCount) {
+            findVideoRow(n.getChild(i))?.let { return it }
+        }
+        return null
+    }
+
+    private fun findScrollable(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (n == null) return null
+        if (n.isScrollable) return n
+        for (i in 0 until n.childCount) {
+            findScrollable(n.getChild(i))?.let { return it }
+        }
+        return null
     }
 
     fun scroll(label: String?, down: Boolean): Map<String, Any?> {

@@ -50,22 +50,64 @@ class MediaSessionBridge(private val ctx: Context) {
         }
     }
 
+    /**
+     * The active media session, reached through our accessibility service.
+     *
+     * dispatchMediaKeyEvent() needs MEDIA_CONTENT_CONTROL, which a normal app
+     * does not have — it silently did nothing, so "resume music" kept failing.
+     * An enabled accessibility service is allowed to read active sessions and
+     * drive their transport controls directly.
+     */
+    @SuppressLint("NewApi")
+    private fun activeController(): android.media.session.MediaController? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.LOLLIPOP) return null
+        return try {
+            val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+            val comp = android.content.ComponentName(ctx, LoonaAccessibilityService::class.java)
+            val sessions = msm.getActiveSessions(comp)
+            sessions
+                .filter { it.packageName != ctx.packageName }
+                .sortedByDescending { s ->
+                    when (s.playbackState?.state) {
+                        PlaybackState.STATE_PLAYING -> 3
+                        PlaybackState.STATE_PAUSED -> 2
+                        PlaybackState.STATE_BUFFERING -> 1
+                        else -> 0
+                    }
+                }
+                .firstOrNull()
+        } catch (e: Exception) {
+            Log.w(TAG, "[MediaSession] no session access: ${e.message}")
+            null
+        }
+    }
+
     fun play(): Boolean {
+        val c = activeController()
+        if (c != null) {
+            try { c.transportControls.play(); return true } catch (e: Exception) { /* fall through */ }
+        }
         keyEvent(android.view.KeyEvent.KEYCODE_MEDIA_PLAY)
         return true
     }
 
     fun pause(): Boolean {
+        val c = activeController()
+        if (c != null) {
+            try { c.transportControls.pause(); return true } catch (e: Exception) { /* fall through */ }
+        }
         keyEvent(android.view.KeyEvent.KEYCODE_MEDIA_PAUSE)
         return true
     }
 
     fun nextTrack(): Boolean {
+        activeController()?.let { try { it.transportControls.skipToNext(); return true } catch (e: Exception) { } }
         keyEvent(android.view.KeyEvent.KEYCODE_MEDIA_NEXT)
         return true
     }
 
     fun previousTrack(): Boolean {
+        activeController()?.let { try { it.transportControls.skipToPrevious(); return true } catch (e: Exception) { } }
         keyEvent(android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS)
         return true
     }

@@ -789,6 +789,7 @@
     }
 
     paintPerms(s.permissions);
+  }
 
   var permsKey = '';
   function paintPerms(p) {
@@ -872,7 +873,9 @@
       }
       previewBusy = false;
     };
-    next.src = '/api/frame.jpg?t=' + Date.now();
+    // The frame endpoint needs the panel token too, otherwise every preview
+    // request gets 401 when protection is enabled and the image never loads.
+    next.src = '/api/frame.jpg?' + (panelToken ? 't=' + encodeURIComponent(panelToken) + '&' : '') + '_=' + Date.now();
   }
   // 1.2 s is smooth enough and leaves the server free for settings calls.
   setInterval(previewTick, 1200);

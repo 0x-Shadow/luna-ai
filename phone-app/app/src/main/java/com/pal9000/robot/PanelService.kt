@@ -82,9 +82,11 @@ class PanelService : Service() {
         bridge.panelUrl = srv.url()
         if (srv.port > 0) {
             val mgr = getSystemService(NotificationManager::class.java)
-            mgr?.notify(NOTIF_ID, buildNotification(srv.url()))
+            // Show the tokenized link so the token can be recovered from the
+            // notification if it's ever lost (panel otherwise shows "offline").
+            mgr?.notify(NOTIF_ID, buildNotification(srv.tokenizedUrl()))
         }
-        Log.d(TAG, "[Panel] service attached, url=${srv.url()}")
+        Log.d(TAG, "[Panel] service attached, url=${srv.tokenizedUrl()}")
     }
 
     private fun createChannel() {
