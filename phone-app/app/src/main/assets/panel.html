@@ -602,8 +602,23 @@
 
   /* ── tiny helpers ─────────────────────────────── */
 
+  // Access token from the panel URL (?t=...). Stored once so every API call
+  // can send it — the server requires ?t or x-panel-token on each request.
+  var panelToken = (function () {
+    var m = window.location.search.match(/[?&]t=([^&]+)/);
+    if (m) {
+      try { localStorage.setItem('pal_panel_token', m[1]); } catch (e) {}
+      return m[1];
+    }
+    try { return localStorage.getItem('pal_panel_token') || ''; } catch (e) { return ''; }
+  })();
+
   async function api(path, body) {
     var opts = { cache: 'no-store' };
+    if (panelToken) {
+      var sep = path.indexOf('?') >= 0 ? '&' : '?';
+      path = path + sep + 't=' + encodeURIComponent(panelToken);
+    }
     if (body) {
       opts.method = 'POST';
       opts.headers = { 'Content-Type': 'application/json' };
