@@ -58,11 +58,17 @@ class BrainService : Service() {
     }
 
     fun acquireWakeLock() {
-        if (wakeLock != null) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PAL9000:BrainService:wake")
-        wakeLock?.acquire(10 * 60 * 1000)
-        Log.d(TAG, "[BrainService] wake lock acquired")
+        // No timeout: a 10-minute cap silently expired while the field stayed
+        // non-null, so the lock was never re-acquired and Doze stalled the
+        // wake loop ~10 min after screen-off. Re-check held on every start.
+        if (wakeLock == null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PAL9000:BrainService:wake")
+        }
+        if (wakeLock?.isHeld != true) {
+            wakeLock?.acquire()
+            Log.d(TAG, "[BrainService] wake lock acquired")
+        }
     }
 
     fun releaseWakeLock() {

@@ -298,6 +298,7 @@
     <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 10 3 2-3 2M12.5 14H17"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4.2 3 7.4 7 9 4-1.6 7-4.8 7-9V6l-7-3Z"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></symbol>
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
     <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="4"/><path d="M12 3v4M9 13h.01M15 13h.01M9.5 16.5h5"/></symbol>
@@ -473,6 +474,31 @@
         </div>
       </div>
       <p id="app-hint" style="margin:8px 0 0;color:var(--dimmer);font-size:11.5px">Loading apps…</p>
+
+      <div class="divider"></div>
+
+      <!-- 4c · Home Assistant -->
+      <h2><svg><use href="#i-home"/></svg>Σπίτι<span class="aside">Home Assistant</span></h2>
+      <p style="margin:8px 0 10px;color:var(--dimmer);font-size:11.5px">
+        Connect Home Assistant on your LAN to control lights and climate by voice or from here.
+        The token stays on the phone — it never leaves the device except to HA itself.
+      </p>
+      <div class="cols two">
+        <div class="field">
+          <label for="ha-url">HA URL</label>
+          <input id="ha-url" type="text" placeholder="http://homeassistant.local:8123" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="ha-token">Long-lived token</label>
+          <input id="ha-token" type="password" placeholder="eyJhbGciOi…" spellcheck="false">
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn small primary" id="ha-save">Save</button>
+        <button class="btn small" id="ha-refresh">Refresh devices</button>
+        <span id="ha-status" style="align-self:center;color:var(--dimmer);font-size:11.5px">—</span>
+      </div>
+      <div id="ha-list" style="display:flex;flex-direction:column;gap:6px;margin-top:10px"></div>
 
       <div class="divider"></div>
 
@@ -1047,6 +1073,103 @@
     r.start();
     toast('Listening…');
   });
+
+  /* ── Home Assistant ────────────────────────────── */
+  var haLoaded = false;
+
+  async function haCall(payload) {
+    var r = await api('/api/call', { method: 'ha', payload: payload });
+    if (!r.ok) {
+      var msg = 'failed';
+      try { msg = (JSON.parse(r.result) || {}).error || 'failed'; } catch (e) { /* keep */ }
+      throw new Error(msg);
+    }
+    try { return JSON.parse(r.result); } catch (e) { return {}; }
+  }
+
+  async function haLoadConfig() {
+    try {
+      var c = await haCall({ action: 'config' });
+      if (!typing()) $('ha-url').value = c.url || '';
+      $('ha-status').textContent = c.url
+        ? (c.hasToken ? 'connected' : 'token missing')
+        : 'not configured';
+    } catch (e) {
+      $('ha-status').textContent = 'unreachable';
+    }
+  }
+
+  function haStateLabel(domain, state) {
+    if (state === 'on' || state === 'open') return 'ON';
+    if (state === 'off' || state === 'closed') return 'OFF';
+    if (domain === 'climate') return state + '°';
+    return state;
+  }
+
+  async function haLoadDevices() {
+    var list = $('ha-list');
+    if (!$('ha-url').value.trim()) {
+      list.innerHTML = '';
+      $('ha-status').textContent = 'not configured';
+      return;
+    }
+    $('ha-status').textContent = 'loading…';
+    try {
+      var r = await haCall({ action: 'states' });
+      var ents = (r && r.entities) || [];
+      // Only things a desk-mate should touch: lights, climate, switches, covers.
+      ents = ents.filter(function (e) {
+        return ['light', 'climate', 'switch', 'cover', 'fan'].indexOf(e.domain) >= 0;
+      });
+      if (!ents.length) { list.innerHTML = ''; $('ha-status').textContent = 'no controllable devices'; return; }
+      var html = '';
+      ents.forEach(function (e) {
+        var togglable = e.state === 'on' || e.state === 'off' || e.state === 'open' || e.state === 'closed';
+        html += '<div class="app-row">' +
+          '<div class="app-info">' +
+          '<div class="app-name">' + escapeHtml(e.name) + '</div>' +
+          '<div class="app-pkg">' + escapeHtml(e.id) + '</div>' +
+          '</div>' +
+          '<span style="min-width:44px;text-align:right;font-size:11.5px;color:var(--dim)">' +
+          escapeHtml(haStateLabel(e.domain, e.state)) + '</span>' +
+          (togglable
+            ? '<label class="switch-app"><input type="checkbox" data-ha-id="' + escapeHtml(e.id) +
+              '" data-ha-domain="' + escapeHtml(e.domain) + '" ' + (e.state === 'on' || e.state === 'open' ? 'checked' : '') +
+              '><span class="track"></span></label>'
+            : '') +
+          '</div>';
+      });
+      list.innerHTML = html;
+      $('ha-status').textContent = ents.length + ' devices';
+      Array.prototype.forEach.call(list.querySelectorAll('input[data-ha-id]'), function (cb) {
+        cb.addEventListener('change', function () {
+          var domain = cb.dataset.haDomain;
+          var service = cb.checked ? 'turn_on' : 'turn_off';
+          haCall({ action: 'call', domain: domain, service: service, target: '', entity: cb.dataset.haId })
+            .then(function () { toast(cb.checked ? 'Turned on' : 'Turned off', 'good'); haLoadDevices(); })
+            .catch(function (e) { toast('HA: ' + e.message, 'bad'); cb.checked = !cb.checked; });
+        });
+      });
+      haLoaded = true;
+    } catch (e) {
+      $('ha-status').textContent = e.message;
+      list.innerHTML = '';
+    }
+  }
+
+  $('ha-save').addEventListener('click', function () {
+    var payload = { action: 'config', url: $('ha-url').value.trim() };
+    var tok = $('ha-token').value.trim();
+    if (tok) payload.token = tok;
+    haCall(payload).then(function () {
+      $('ha-token').value = '';
+      toast('Home Assistant saved', 'good');
+      haLoadConfig();
+      haLoadDevices();
+    }).catch(function (e) { toast('HA: ' + e.message, 'bad'); });
+  });
+  $('ha-refresh').addEventListener('click', haLoadDevices);
+  haLoadConfig();
 
   previewTick();
 })();

@@ -57,7 +57,22 @@ class PanelService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // START_STICKY can revive this service with no Activity around and
+        // app.bridge still null — attachServer() used to bail silently and
+        // nothing ever retried, leaving the LAN panel permanently dead after
+        // a process kill. Retry until the bridge shows up.
+        attachWithRetry(0)
         return START_STICKY
+    }
+
+    private fun attachWithRetry(attempt: Int) {
+        val app = application as? PalApp ?: return
+        if (app.bridge != null) { attachServer(); return }
+        if (attempt >= 30) {
+            Log.w(TAG, "[Panel] bridge never came back — panel stays down")
+            return
+        }
+        android.os.Handler(mainLooper).postDelayed({ attachWithRetry(attempt + 1) }, 2000)
     }
 
     private fun attachServer() {

@@ -284,6 +284,10 @@ class MainActivity : AppCompatActivity() {
         bridge?.haltListening()
         // The panel server deliberately keeps running: it belongs to the
         // app process, and reopening Loona re-attaches it to the new WebView.
+        // Drop the dead bridge so the panel knows to wait for a new one
+        // instead of evaluating JS into a destroyed WebView forever.
+        val app = application as? PalApp
+        if (app != null && app.bridge === bridge) app.bridge = null
         webView.destroy()
         super.onDestroy()
     }

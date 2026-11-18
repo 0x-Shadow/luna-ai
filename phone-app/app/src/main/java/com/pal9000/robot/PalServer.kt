@@ -232,8 +232,9 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
         connectedClients.forEach { (ip, ts) ->
             arr.put(org.json.JSONObject().put("ip", ip).put("last", ts))
         }
+        // Never return the raw token — only whether one is set.
         return org.json.JSONObject()
-            .put("token", panelToken())
+            .put("hasToken", panelToken().isNotBlank())
             .put("enabled", panelToken().isNotBlank())
             .put("clients", arr)
             .put("blocked", org.json.JSONArray(blockedIps().toList()))
@@ -248,75 +249,84 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
     }
 
     private fun stateJson(): String {
-        val cached = cachedState?.let { try { JSONObject(it) } catch (e: Exception) { null } }
-        val liveJson = evalJson(
-            "(function(){try{return JSON.stringify({" +
-                "hermes:hermesCfg(),voice:voiceCfg(),ui:uiCfg(),state:appState,turn:turnActive,loop:wakeLoopOn,latency:lastHermesLatency," +
-                "address:(document.getElementById('cfg-url')||{}).value||''});}catch(e){return JSON.stringify({error:String(e)})}})()"
-        )
-        val live = liveJson != null && liveJson.length() > 0
-        // Read-only cache when Loona is in the background: the panel keeps
-        // showing the real settings instead of blanks.
-        val page = if (live) liveJson!! else (cached ?: JSONObject())
+        return try {
+            val cached = cachedState?.let { try { JSONObject(it) } catch (e: Exception) { null } }
+            val liveJson = evalJson(
+                "(function(){try{return JSON.stringify({" +
+                    "hermes:hermesCfg(),voice:voiceCfg(),ui:uiCfg(),state:appState,turn:turnActive,loop:wakeLoopOn,latency:lastHermesLatency," +
+                    "address:(document.getElementById('cfg-url')||{}).value||''});}catch(e){return JSON.stringify({error:String(e)})}})()"
+            )
+            val live = liveJson != null && liveJson.length() > 0
+            // Read-only cache when Loona is in the background: the panel keeps
+            // showing the real settings instead of blanks.
+            val page = if (live) liveJson!! else (cached ?: JSONObject())
 
-        val hermes = page.optJSONObject("hermes") ?: JSONObject()
-        val voice = page.optJSONObject("voice") ?: JSONObject()
+            val hermes = page.optJSONObject("hermes") ?: JSONObject()
+            val voice = page.optJSONObject("voice") ?: JSONObject()
 
-        if (System.currentTimeMillis() - hermesCheckedAt > 15000) {
-            var r = checkHttp(hermes.optString("url"), hermes.optString("key"))
-            if (!r.first) {
-                // One retry: a cold app start sometimes loses the first probe.
-                Thread.sleep(350)
-                r = checkHttp(hermes.optString("url"), hermes.optString("key"))
+            if (System.currentTimeMillis() - hermesCheckedAt > 15000) {
+                var r = checkHttp(hermes.optString("url"), hermes.optString("key"))
+                if (!r.first) {
+                    // One retry: a cold app start sometimes loses the first probe.
+                    Thread.sleep(350)
+                    r = checkHttp(hermes.optString("url"), hermes.optString("key"))
+                }
+                hermesOk = r.first
+                hermesModels = r.second
+                hermesCheckedAt = System.currentTimeMillis()
             }
-            hermesOk = r.first
-            hermesModels = r.second
-            hermesCheckedAt = System.currentTimeMillis()
-        }
 
-        val status = JSONObject(bridge.statusSnapshot())
-        val voices = JSONObject(bridge.voicesSnapshot())
-        val whisper = voice.optString("whisper")
-        val whisperOn = voice.optBoolean("whisperOn", true)
+            val status = JSONObject(bridge.statusSnapshot())
+            val voices = JSONObject(bridge.voicesSnapshot())
+            val whisper = voice.optString("whisper")
+            val whisperOn = voice.optBoolean("whisperOn", true)
 
-        val json = JSONObject()
-            .put("device", JSONObject()
-                .put("model", android.os.Build.MODEL)
-                .put("manufacturer", android.os.Build.MANUFACTURER)
-                .put("sdk", android.os.Build.VERSION.SDK_INT)
-                .put("android", android.os.Build.VERSION.RELEASE)
-                .put("app", "PAL9000")
-                .put("ip", localIp())
-                .put("port", port)
-                .put("panel", url()))
-            .put("hermes", JSONObject(hermes.toString())
-                .put("reachable", hermesOk)
-                .put("models", hermesModels))
-            .put("voice", JSONObject(voice.toString())
-                .put("ttsEngine", voices.optString("engine"))
-                .put("ttsLang", voices.optString("current"))
-                .put("greekTts", voices.optInt("el", -2) >= 0)
-                .put("ttsVoices", voices.optInt("voiceCount", 0))
-                .put("whisperReachable", if (whisperOn && whisper.isNotBlank()) canConnect(whisper) else false))
-            .put("permissions", status)
-            .put("ui", page.optJSONObject("ui") ?: JSONObject())
-            .put("runtime", JSONObject()
-                .put("state", page.optString("state"))
-                .put("turn", page.optBoolean("turn"))
-                .put("loop", page.optBoolean("loop")))
-            .put("battery", JSONObject(bridge.batterySnapshot()))
-            .put("access", accessJson())
-            .put("apps", JSONObject(bridge.appsWithAccessJson()))
+            val json = JSONObject()
+                .put("device", JSONObject()
+                    .put("model", android.os.Build.MODEL)
+                    .put("manufacturer", android.os.Build.MANUFACTURER)
+                    .put("sdk", android.os.Build.VERSION.SDK_INT)
+                    .put("android", android.os.Build.VERSION.RELEASE)
+                    .put("app", "PAL9000")
+                    .put("ip", localIp())
+                    .put("port", port)
+                    .put("panel", url()))
+                .put("hermes", JSONObject(hermes.toString())
+                    .put("reachable", hermesOk)
+                    .put("models", hermesModels))
+                .put("voice", JSONObject(voice.toString())
+                    .put("ttsEngine", voices.optString("engine"))
+                    .put("ttsLang", voices.optString("current"))
+                    .put("greekTts", voices.optInt("el", -2) >= 0)
+                    .put("ttsVoices", voices.optInt("voiceCount", 0))
+                    .put("whisperReachable", if (whisperOn && whisper.isNotBlank()) canConnect(whisper) else false))
+                .put("permissions", status)
+                .put("ui", page.optJSONObject("ui") ?: JSONObject())
+                .put("runtime", JSONObject()
+                    .put("state", page.optString("state"))
+                    .put("turn", page.optBoolean("turn"))
+                    .put("loop", page.optBoolean("loop")))
+                .put("battery", JSONObject(bridge.batterySnapshot()))
+                .put("access", accessJson())
+                .put("apps", JSONObject(bridge.appsWithAccessJson()))
 
-        if (!live) {
-            json.put("offline", true)
-            listOf("hermes", "voice", "ui", "runtime").forEach { k ->
-                cached?.opt(k)?.let { json.put(k, it) }
+            if (!live) {
+                json.put("offline", true)
+                listOf("hermes", "voice", "ui", "runtime").forEach { k ->
+                    cached?.opt(k)?.let { json.put(k, it) }
+                }
             }
+            val out = json.toString()
+            if (live) cachedState = out
+            out
+        } catch (e: Exception) {
+            // Never 500 the panel: return a minimal valid state so the UI keeps working.
+            Log.w(TAG, "[Panel] stateJson failed: ${e.message}")
+            JSONObject()
+                .put("offline", true)
+                .put("error", e.message ?: "state error")
+                .toString()
         }
-        val out = json.toString()
-        if (live) cachedState = out
-        return out
     }
 
     private fun applyConfig(body: String): String {
@@ -454,18 +464,23 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
     private fun localIp(): String {
         return try {
             var fallback = "127.0.0.1"
+            var wifiAddr = ""
             for (ni in NetworkInterface.getNetworkInterfaces()) {
                 if (!ni.isUp || ni.isLoopback) continue
+                // Prefer Wi-Fi (wlan0-style names) over mobile/cellular so the
+                // panel URL matches what's on the same LAN as the browser.
+                val name = ni.name ?: ""
+                val isWifi = name.startsWith("wlan") || name.startsWith("wlo") || name.contains("wifi", ignoreCase = true)
                 for (addr in ni.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
-                        val a = addr.hostAddress ?: continue
-                        if (a.startsWith("192.168.") || a.startsWith("10.")) {
-                            return a
-                        }
-                        if (fallback == "127.0.0.1") fallback = a
-                    }
+                    if (addr !is Inet4Address || addr.isLoopbackAddress || addr.isLinkLocalAddress) continue
+                    val a = addr.hostAddress ?: continue
+                    if (!a.startsWith("192.168.") && !a.startsWith("10.")) continue
+                    if (isWifi) return a
+                    if (wifiAddr.isEmpty()) wifiAddr = a
+                    if (fallback == "127.0.0.1") fallback = a
                 }
             }
+            if (wifiAddr.isNotEmpty()) return wifiAddr
             fallback
         } catch (e: Exception) {
             "127.0.0.1"

@@ -6,8 +6,11 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#000000">
     <title>PAL9000 Client</title>
-    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <!-- deferred + guarded: a dead CDN must not block the page boot (the
+         inline script below runs during parse; local scripts stay sync so
+         PALWake/PALBrain exist when it executes) -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js" defer onerror="console.warn('[Boot] face-api CDN unreachable — face tracking off')"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js" defer onerror="console.warn('[Boot] socket.io CDN unreachable — LAN socket off')"></script>
     <script src="wake.js"></script>
     <script src="brain.js"></script>
   <style>
@@ -561,6 +564,10 @@
     <label class="chk"><input type="checkbox" id="cfg-ond"> On-device only (audio never leaves the phone)</label>
     <label>Whisper (LAN)<input id="cfg-whisper" inputmode="url" autocapitalize="off" autocomplete="off" placeholder="https://whisper.example.com:10300"></label>
     <label class="chk"><input type="checkbox" id="cfg-whisper-on"> Hear commands with whisper on the LAN</label>
+    <h3>Home Assistant</h3>
+    <label>HA URL<input id="cfg-ha-url" inputmode="url" autocapitalize="off" autocomplete="off" placeholder="http://homeassistant.local:8123"></label>
+    <label>HA token<input id="cfg-ha-token" type="password" autocapitalize="off" autocomplete="off" placeholder="Long-lived access token"></label>
+    <p id="cfg-ha-status">Home Assistant: not configured</p>
     <div class="row">
       <button id="cfg-save">Save</button>
       <button id="cfg-close">Close</button>
@@ -931,11 +938,13 @@
           setStatus('Thinking');
           // The listening watchdog must not kill a long model turn.
           clearTimeout(wakeResetTimer);
+          wakeResetTimer = null;
           break;
         case 'speaking':
           setMood('happy');
           setStatus('');
           clearTimeout(wakeResetTimer);
+          wakeResetTimer = null;
           break;
         case 'dead':      setMood('dead');      setStatus('Offline'); break;
       }
@@ -990,6 +999,25 @@
     }
 
     let lastWake = -99999;
+    // Same-utterance collection: Google fires the wake word on the FIRST
+    // partial ("λούνα") while the command words ("τι ώρα είναι") arrive in
+    // LATER partials of the same session. Starting the turn on a fixed
+    // 400 ms cut cancelled the recognizer mid-utterance and lost them.
+    let wakePartial = '';          // tail of the utterance that carried the wake word
+    let wakeCollectTimer = null;
+    let wakeTurnConsumed = false;  // the collected tail already drove this turn
+    function finishWakeCollection() {
+      clearTimeout(wakeCollectTimer);
+      wakeCollectTimer = null;
+      if (!wakeFired || turnActive || appState !== 'waking') return;
+      setState('listening');
+      if (wakePartial) {
+        wakeTurnConsumed = true;   // swallow the in-flight final of the same utterance
+        startTurn(wakePartial);
+      } else {
+        startTurn('');
+      }
+    }
     function onWakeWord(trigger, tail) {
       const t = now();
       if (t - lastWake < 2500) return;
@@ -1016,16 +1044,25 @@
       if (uiCfg().chime !== false) playListenTone(true);
       if (socket && socket.connected) socket.emit('wake_detected', { phrase: WAKE_PHRASE });
 
+      wakePartial = (tail || '').trim();
+      wakeTurnConsumed = false;
       clearTimeout(wakeResetTimer);
-      // 400 ms: enough for the chime to start, short enough that the command
-      // isn't missed while the mic is still closed.
-      setTimeout(() => {
-        if (appState === 'waking') { setState('listening'); startTurn(tail || ''); }
-      }, 400);
       const listenWindow = Math.max(4, Number(uiCfg().timeout) || 12) * 1000;
       wakeResetTimer = setTimeout(() => {
         if (appState === 'listening') setState('idle');
       }, listenWindow);
+
+      if (trigger === 'partial') {
+        // The rest of the sentence is still streaming in — collect until the
+        // final lands or the partials go quiet (see finishWakeCollection).
+        clearTimeout(wakeCollectTimer);
+        wakeCollectTimer = setTimeout(finishWakeCollection, 2500);
+      } else {
+        // 'speech' (final), 'voice' (envelope), 'server': the utterance is
+        // over. 400 ms: enough for the chime to start, short enough that the
+        // command isn't missed while the mic is still closed.
+        setTimeout(finishWakeCollection, 400);
+      }
     }
 
     /* ══════════════════════════════════════════════════════════════
@@ -1266,9 +1303,15 @@
 
     const video = document.getElementById('webcam');
     const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
-    const detectorOptions = window.faceapi
-      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 })
-      : null;
+    // face-api loads deferred (a dead CDN must not block boot), so build the
+    // options lazily — the inline script runs before the deferred tag.
+    let detectorOptions = null;
+    function getDetectorOptions() {
+      if (!detectorOptions && window.faceapi) {
+        detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 });
+      }
+      return detectorOptions;
+    }
 
     let lastSeenAt = 0;
     let wasLooking = false;
@@ -1293,8 +1336,9 @@
     video.addEventListener('play', () => {
       async function track() {
         try {
-          if (!detectorOptions) { requestAnimationFrame(track); return; }
-          const det = await faceapi.detectSingleFace(video, detectorOptions);
+          const opts = getDetectorOptions();
+          if (!opts) { requestAnimationFrame(track); return; }
+          const det = await faceapi.detectSingleFace(video, opts);
           if (!faceTrackingLive) {
             faceTrackingLive = true;   // the loop ran — the gate is now active
             console.log('[Camera] gaze gate armed — face tracking live');
@@ -1352,7 +1396,9 @@
       }
     }
 
-    initFaceApi();
+    // Deferred CDN: wait for load so face-api is actually present.
+    if (window.faceapi) initFaceApi();
+    else window.addEventListener('load', initFaceApi, { once: true });
 
     // Touch: the robot looks at your finger, then smiles at you.
     // Tap in idle → start listening (press-to-talk when wake word misses).
@@ -1539,6 +1585,9 @@
     const cfgModelFast = document.getElementById('cfg-model-fast');
     const cfgProfileVal = document.getElementById('cfg-profile-val');
     const cfgHint = document.getElementById('cfg-hint');
+    const cfgHaUrl = document.getElementById('cfg-ha-url');
+    const cfgHaToken = document.getElementById('cfg-ha-token');
+    const cfgHaStatus = document.getElementById('cfg-ha-status');
 
     function openConfig() {
       const c = hermesCfg();
@@ -1549,6 +1598,15 @@
       cfgKeyFast.value = c.keyFast || '';
       cfgModelFast.value = c.modelFast || '';
       cfgProfileVal.textContent = activeHermesProfile;
+      // Home Assistant config lives native-side (SharedPreferences) so the
+      // LAN panel and the voice path share one source of truth.
+      Bridge.call('ha', { action: 'config' }, 5000).then(r => {
+        cfgHaUrl.value = r.url || '';
+        cfgHaToken.value = '';
+        cfgHaStatus.textContent = r.url
+          ? (r.hasToken ? 'Home Assistant: configured' : 'Home Assistant: URL set, token missing')
+          : 'Home Assistant: not configured';
+      }).catch(() => { cfgHaStatus.textContent = 'Home Assistant: not reachable'; });
       const v = voiceCfg();
       document.getElementById('cfg-lang').value = v.lang;
       document.getElementById('cfg-ond').checked = !!v.onDevice;
@@ -1564,6 +1622,7 @@
         panelEl.textContent = 'Web panel: —';
       }
       cfgPanel.classList.add('open');
+      wakeLoopOn = false;                 // stopListen below kills the native loop
       Bridge.call('stopListen', {}, 3000).catch(() => {});
     }
     function closeConfig() {
@@ -1582,6 +1641,16 @@
         modelFast: (cfgModelFast.value || '').trim() || PALBrain.DEFAULT_CONFIG.modelFast
       };
       localStorage.setItem('pal.hermes', JSON.stringify(cfg));
+      // Home Assistant (native prefs — never written to localStorage so the
+      // token can't leak into page storage the panel reads).
+      const haPayload = { action: 'config', url: (cfgHaUrl.value || '').trim() };
+      if ((cfgHaToken.value || '').trim()) haPayload.token = cfgHaToken.value.trim();
+      Bridge.call('ha', haPayload, 5000).then(r => {
+        cfgHaStatus.textContent = r.url
+          ? (r.hasToken ? 'Home Assistant: configured' : 'Home Assistant: URL set, token missing')
+          : 'Home Assistant: not configured';
+        cfgHaToken.value = '';
+      }).catch(() => { cfgHaStatus.textContent = 'Home Assistant: not reachable'; });
       applyVoiceConfig();
       cfgHint.textContent = 'Checking ' + cfg.url + ' …';
       Bridge.call('http', {
@@ -1832,7 +1901,9 @@
       // and the audio never leaves the house. Fall back to Google if it is
       // unreachable or hears nothing.
       const vc = voiceCfg();
-      if (isNative() && vc.whisperOn !== false && vc.stt !== 'google') {
+      const whisperUsable = vc.whisperOn !== false && vc.stt !== 'google' &&
+        !!(vc.whisper && String(vc.whisper).trim());   // no URL → no dead air
+      if (isNative() && whisperUsable) {
         sttPending = true;
         Bridge.call('listen', {
           mode: 'whisper',
@@ -1862,6 +1933,7 @@
       pendingWhen = null;
       showTranscript('');
       wakeFired = false;
+      wakeTurnConsumed = false;
       startWakeLoop();
     }
 
@@ -1911,7 +1983,7 @@
       if (needsConfirm) {
         const trEl = PALBrain.confirmText(action, Date.now(), voiceLang());
         showCard(action.type, trEl.replace(/\.$/, '') + '?', 'warn', () => {
-          executeLocal(action, { silent, confirmed: true });
+          executeLocal(action, saidText, { silent, confirmed: true });
         });
         return;
       }
@@ -1923,6 +1995,17 @@
         case 'timer':      call = Bridge.call('timer', { title: action.label, message: action.label, ms: action.ms }, 15000); break;
         case 'cancel':     call = Bridge.call('cancel', { kind: action.all ? 'all' : action.kind }, 10000); break;
         case 'torch':      call = Bridge.call('torch', { on: action.on }); break;
+        case 'ha': {
+          // Home Assistant: resolve config native-side, run the service call.
+          call = Bridge.call('ha', {
+            action: 'call',
+            domain: action.domain || 'light',
+            service: action.service || 'turn_on',
+            target: action.target || '',
+            value: action.value
+          }, 15000);
+          break;
+        }
         case 'brightness': call = Bridge.call('brightness', { value: action.value, op: action.op }); break;
         case 'volume':     call = Bridge.call('volume', { value: action.value, op: action.op, stream: action.stream }); break;
         case 'openApp': {
@@ -2088,6 +2171,9 @@
         // 1. Try streaming.
         let s = null;
         try {
+          // Streaming shows live tokens, so a generous cap is fine (the page
+          // stays responsive); the silent non-stream fallback below is the
+          // one that must not hang for minutes.
           s = await Bridge.call('stream', { url: r.url, headers: r.headers, body: r.body }, 125000);
         } catch (e) {
           /* stream threw — try http below */
@@ -2096,7 +2182,7 @@
         if (!s || s.status === 0) {
           try {
             const plain = PALBrain.buildRequest(attemptCfg, hermesHistory, { stream: false });
-            const raw = await Bridge.call('http', { url: plain.url, method: 'POST', headers: plain.headers, body: plain.body }, 95000);
+            const raw = await Bridge.call('http', { url: plain.url, method: 'POST', headers: plain.headers, body: plain.body }, 45000);
             s = { status: raw.status, text: '', body: raw.body, reasoning: '' };
           } catch (e2) {
             if (useFast) continue;            // try root on next iteration
@@ -2155,7 +2241,7 @@
       if (action) {
         console.log('[Hermes] action ' + JSON.stringify(action));
         // The action happens as soon as the sentence about it is out.
-        setTimeout(() => executeLocal(action, { silent: true }), spokeAny ? 120 : 0);
+        setTimeout(() => executeLocal(action, '', { silent: true }), spokeAny ? 120 : 0);
         if (spokeAny) {
           say(true);                     // flush whatever is left unsaid
           if (!spoken) speakChunk(PALBrain.confirmText(action, Date.now(), voiceLang()), ttsPending === 0);
@@ -2190,7 +2276,20 @@
       Bridge.call('stopListen', {}, 5000).catch(() => {});
       ttsPending = 0;
       speakChunk(text, true);
+      // Watchdog: if the engine never reports done (flushed, crashed, or a
+      // language with no voice), the turn must still end — otherwise appState
+      // sticks at 'speaking' and the wake loop never re-arms.
+      clearTimeout(speakWatchdog);
+      speakWatchdog = setTimeout(() => {
+        if (appState === 'speaking') {
+          console.warn('[TTS] watchdog — forcing idle after missing done event');
+          Bridge.call('stopSpeak', {}, 3000).catch(() => {});
+          setState('idle');
+          endTurn();
+        }
+      }, Math.min(60000, 3000 + text.length * 90));
     }
+    let speakWatchdog = null;
 
     /* Streaming speech: the answer is spoken sentence by sentence while the
        rest of it is still arriving, instead of after the model finishes. */
@@ -2248,7 +2347,9 @@
         });
     }
     function stopWakeLoop() {
-      if (!wakeLoopOn) { return; }
+      // Always tell the native side, even if JS thinks the loop is already
+      // off: a stale `wakeLoopOn=true` here plus a stopped native session is
+      // exactly the "wake word dead until restart" desync.
       wakeLoopOn = false;
       Bridge.call('stopListen', {}, 5000).catch(() => {});
     }
@@ -2259,6 +2360,21 @@
       if (ev.type === 'partial') {
         console.log('[STT] partial: ' + (ev.text || ''));
         if (turnActive) showTranscript(ev.text || '');
+        else if (wakeFired && appState === 'waking') {
+          // Same utterance as the wake word — keep the tail so the command
+          // isn't lost when the turn starts. Google sometimes drops the wake
+          // token from later partials ("πώς σε λένε"), so take the whole
+          // text when it is gone.
+          const sw = PALBrain.splitWake(ev.text || '');
+          const next = (sw.wake ? sw.rest : (ev.text || '')).trim();
+          if (next) { wakePartial = next; showTranscript(next); }
+          clearTimeout(wakeCollectTimer);
+          // Finalize shortly after the words stop, but never later than 5 s
+          // after the wake so a dead session can't stall the turn.
+          const cap = wakeFiredAt + 5000;
+          wakeCollectTimer = setTimeout(finishWakeCollection,
+            Math.max(0, Math.min(now() + 1200, cap) - now()));
+        }
         else if (!wakeFired) {
           // Fire on a partial that already contains the wake token — this is
           // much faster and more reliable than waiting for the recognizer's
@@ -2275,7 +2391,18 @@
         envelopeFallback = false;                    // real words are back
         if (appState === 'speaking') return;          // our own voice, ignore
         if (turnActive && (appState === 'listening' || appState === 'waking' || appState === 'thinking')) {
+          // A turn driven by the collected tail already owns this utterance —
+          // its final must not fire the command a second time.
+          if (wakeTurnConsumed) { wakeTurnConsumed = false; return; }
           handleUtterance(ev.text);
+          return;
+        }
+        if (appState === 'waking' && wakeFired && !turnActive) {
+          // Final of the utterance that carried the wake word: use it whole.
+          const sw = PALBrain.splitWake(ev.text || '');
+          const next = (sw.wake ? sw.rest : (ev.text || '')).trim();
+          if (next) wakePartial = next;
+          finishWakeCollection();
           return;
         }
         if (!turnActive) {                       // wake loop running
@@ -2297,8 +2424,15 @@
           if (turnActive) googleListen();
           return;
         }
-        // 6/7 = "nothing said" — normal while waiting for a wake word
-        if (ev.code === 7 || ev.code === 6) return;
+        // 6 = "no speech", 7 = "no match"/busy — normal while waiting for a
+        // wake word, but during a turn they still mean "we heard nothing".
+        if (ev.code === 7 || ev.code === 6) {
+          if (turnActive) sttPending = false;
+          return;
+        }
+        // Every other error ends the pending transcription — leaving
+        // sttPending=true forever froze the turn (no endTurn, no wake loop).
+        sttPending = false;
         // Only genuine engine failures count — ERROR_CLIENT (5) is a restart
         // race, not a missing recognizer, and must not disable the wake word.
         if (ev.code === 1 || ev.code === 2 || ev.code === 3) sttHardErrors++;
@@ -2329,6 +2463,7 @@
         setMood(moodFromText(replyEl ? replyEl.textContent : ''));
       }
       if (ev.type === 'done' || ev.type === 'error') {
+        clearTimeout(speakWatchdog);
         ttsPending = Math.max(0, ttsPending - 1);
         // More sentences are still queued or being spoken.
         if (ttsPending > 0) return;
@@ -2350,8 +2485,20 @@
       }
     });
 
-    // Surface native permissions/config once at boot
-    if (isNative()) {
+    // Surface native permissions/config once at boot.
+    // window.isNativeApp is injected by evaluateJavascript AFTER this script
+    // parses, so a plain if(isNative()) here silently no-opped — voice config
+    // never reached native and STT booted on the default en-US instead of the
+    // saved language. Poll for the flag exactly like the unlock path does.
+    function onNativeReady(cb) {
+      if (isNative()) { cb(); return; }
+      let tries = 0;
+      const t = setInterval(() => {
+        if (isNative()) { clearInterval(t); cb(); }
+        else if (++tries > 50) { clearInterval(t); console.warn('[Boot] native flag never arrived'); }
+      }, 100);
+    }
+    onNativeReady(() => {
       applyVoiceConfig();          // language + on-device privacy for STT/TTS
       applyUi();                   // face zoom, clock, kiosk, dimming, wake on/off
       Bridge.call('status', {}, 8000).then(st => {
@@ -2360,7 +2507,7 @@
         if (st && st.exactAlarms === false) console.warn('[Bridge] exact alarms not granted');
         if (st && st.writeSettings === false) console.warn('[Bridge] write settings not granted');
       }).catch(() => {});
-    }
+    });
 
     /* ══════════════════════════════════════════════════════════════
        7. SOCKET.IO (optional — the legacy port-5000 server. Down ⇒
@@ -2370,17 +2517,24 @@
     const SERVER_URL = '';
     let socket = null;
 
-    if (typeof io === 'function') {
-      try {
-        socket = io(SERVER_URL, { transports: ['websocket', 'polling'], reconnection: false });
-        window.socket = socket;
-      } catch (e) {
-        console.warn('[Socket] init failed, standalone mode:', e);
-        socket = null;
+    // socket.io is deferred now: it may arrive after this point, so retry on
+    // load instead of giving up with "library missing" forever.
+    function initSocket() {
+      if (socket) return;
+      if (typeof io === 'function') {
+        try {
+          socket = io(SERVER_URL, { transports: ['websocket', 'polling'], reconnection: false });
+          window.socket = socket;
+        } catch (e) {
+          console.warn('[Socket] init failed, standalone mode:', e);
+          socket = null;
+        }
+      } else {
+        console.warn('[Socket] library missing, standalone mode');
       }
-    } else {
-      console.warn('[Socket] library missing, standalone mode');
     }
+    if (typeof io === 'function') initSocket();
+    else window.addEventListener('load', initSocket, { once: true });
 
     if (socket) {
     socket.on('connect', () => {
@@ -2552,6 +2706,16 @@
     document.addEventListener('click', () => {
       const silent = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
       silent.play().catch(() => {});
+      // The "tap to listen" banner is real: if the wake loop died, a tap
+      // while idle re-arms it instead of being swallowed by attemptUnlock.
+      if (isNative() && unlocked && !wakeLoopOn && !turnActive &&
+          (appState === 'idle' || appState === 'sleeping')) {
+        wakeLoopRetries = 0;
+        sttHardErrors = 0;
+        envelopeFallback = false;
+        startWakeLoop();
+        return;
+      }
       attemptUnlock('tap');
     });
 

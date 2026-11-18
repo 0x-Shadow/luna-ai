@@ -74,13 +74,13 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private var speech: SpeechRecognizer? = null
     private var listenMode = "off"           // off | once | loop | conversation | whisper
-    private var lang = "en-US"               // BCP-47 tag for STT + TTS
+    @Volatile private var lang = "en-US"     // BCP-47 tag for STT + TTS
     private var onDeviceOnly = true          // keep audio on the phone
     private var recognizerOnDevice = false
 
     // Whisper on the LAN (Wyoming protocol — the TrueNAS/Home-Assistant
     // whisper add-on). Audio goes nowhere else; empty url disables it.
-    private var whisperUrl = ""
+    @Volatile private var whisperUrl = ""
     private var whisperOn = true
     // Configurable Whisper endpointing (ms), set via the `voice` bridge method.
     private var whisperNoSpeechMs = 2000L
@@ -90,10 +90,11 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private var captureThread: Thread? = null
     // Bumped on every listen/stop so a queued auto-restart can't resurrect a
     // session that was already replaced (that race killed the wake loop).
-    private var listenToken = 0L
+    @Volatile private var listenToken = 0L
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var ttsInitAttempts = 0
     private var ttsQueue: MutableList<Pair<String, String>> = mutableListOf()
 
     /** Media session bridge — Spotify, YouTube Music, or any active session;
@@ -171,6 +172,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 "youtube" -> youtube(requestId, payload)
                 "navigate" -> navigate(requestId, payload)
                 "media" -> media(requestId, payload)
+                "ha" -> ha(requestId, payload)
                 "automation" -> automation(requestId, payload)
                 "notify" -> notify(requestId, payload)
                 "callLog" -> resolve(requestId, true, callLogJson())
@@ -272,7 +274,8 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
 
     private fun http(requestId: String, p: JSONObject) {
         io.execute {
-            val url = p.optString("url")
+            val url = p.optString("url").trim()
+            if (url.isBlank()) { resolve(requestId, false, err("no server URL")); return@execute }
             val method = (p.optString("method", "POST")).uppercase(Locale.US)
             var conn: HttpURLConnection? = null
             try {
@@ -353,7 +356,29 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 }
 
                 BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { r ->
+                    val ctype = conn.contentType ?: ""
                     var line = r.readLine()
+                    // A server that ignores "stream": true answers with one
+                    // JSON body — parsing it line-by-line as SSE yielded an
+                    // empty answer with status 200 ("I couldn't reach my brain"
+                    // though the connection was fine).
+                    if (line != null && !line.trim().startsWith("data:") &&
+                        ctype.contains("json", ignoreCase = true)) {
+                        val rest = StringBuilder(line)
+                        while (r.readLine().also { rest.append('\n').append(it) } != null) { /* keep reading */ }
+                        try {
+                            val o = JSONObject(rest.toString())
+                            val ch = o.optJSONArray("choices")?.optJSONObject(0)
+                            val msg = ch?.optJSONObject("message") ?: ch?.optJSONObject("delta")
+                            val words = msg?.optString("content", "") ?: ""
+                            val think = msg?.optString("reasoning_content", "") ?: ""
+                            if (think.isNotEmpty()) { reasoning.append(think); pushChunk(requestId, "reasoning", think) }
+                            if (words.isNotEmpty()) { answer.append(words); pushChunk(requestId, "content", words) }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "[Stream] non-SSE body not JSON: ${e.message}")
+                        }
+                        line = null
+                    }
                     while (line != null) {
                         val l = line.trim()
                         if (l.startsWith("data:")) {
@@ -460,11 +485,20 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private fun sttOnDeviceAvailable(): Boolean =
         Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)
 
+    // Languages whose on-device model turned out to be missing (error 12/13).
+    // Persisted so the next boot goes straight to the network recognizer
+    // instead of paying a ~10 s dead window discovering it again.
+    private fun sttPrefs() = ctx.getSharedPreferences("pal_stt", Context.MODE_PRIVATE)
+    private fun onDeviceBroken(tag: String): Boolean = sttPrefs().getBoolean("broken_$tag", false)
+    private fun markOnDeviceBroken(tag: String) {
+        sttPrefs().edit().putBoolean("broken_$tag", true).apply()
+    }
+
     private fun ensureRecognizer() {
         // Android 13+ can run recognition entirely on the device: audio never
         // leaves the phone. Fall back to the network recognizer when there is
         // no on-device model for the chosen language.
-        val wantOnDevice = onDeviceOnly && sttOnDeviceAvailable()
+        val wantOnDevice = onDeviceOnly && sttOnDeviceAvailable() && !onDeviceBroken(lang)
         if (speech != null && recognizerOnDevice == wantOnDevice) return
         try {
             speech?.destroy()
@@ -480,7 +514,11 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     /* ═══════════ voice configuration (language + privacy) ═══════════ */
 
     private fun voice(requestId: String, p: JSONObject) {
-        if (p.has("lang")) lang = p.optString("lang", lang).ifBlank { "en-US" }
+        if (p.has("lang")) {
+            val newLang = p.optString("lang", lang).ifBlank { "en-US" }
+            if (newLang != lang) langBareRetry = false
+            lang = newLang
+        }
         if (p.has("onDevice")) onDeviceOnly = p.optBoolean("onDevice", onDeviceOnly)
         if (p.has("whisper")) whisperUrl = p.optString("whisper", whisperUrl).trim()
         if (p.has("whisperOn")) whisperOn = p.optBoolean("whisperOn", whisperOn)
@@ -493,7 +531,14 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 val prevMode = listenMode
                 teardownSpeech()
                 applyTtsLocale()
-                if (prevMode != "off") { listenMode = prevMode; ensureRecognizer() }
+                if (prevMode != "off") {
+                    // Restore the session, not just the mode string: without
+                    // this, any voice-config save (settings sheet or web panel)
+                    // killed the native loop while JS still believed it armed.
+                    listenMode = prevMode
+                    ensureRecognizer()
+                    startListening(300)
+                }
                 val out = JSONObject()
                     .put("lang", lang)
                     .put("onDeviceOnly", onDeviceOnly)
@@ -587,6 +632,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             if (listenMode == "off" || token != listenToken) return@postDelayed
             ensureRecognizer()
             val intent = buildRecognizerIntent()
+            lastPartialText = null            // never leak a previous session's words
             try {
                 Log.d(TAG, "[STT] start ($listenMode)")
                 speech?.startListening(intent)
@@ -598,20 +644,35 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         }, delayMs)
     }
 
+    // Set when the network recognizer also rejects the language (error 12/13):
+    // we then retry with the bare subtag ("el-GR" → "el"), which is what the
+    // Google network recognizer actually advertises.
+    private var langBareRetry = false
+
+    private fun sttLang(): String =
+        if (langBareRetry && lang.contains('-')) lang.substringBefore('-') else lang
+
     private fun buildRecognizerIntent(): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, onDeviceOnly)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, sttLang())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, sttLang())
+            // Only ask for OFFLINE when the on-device recognizer is the one
+            // running. onDeviceOnly can be true while we've fallen back to the
+            // network recognizer (broken model persisted) — sending
+            // EXTRA_PREFER_OFFLINE=true there made Google look for the missing
+            // offline pack and loop on error 12 forever.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, recognizerOnDevice)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
-            // Short Greek wake words need a tight end-of-speech window, or the
-            // recognizer waits ~1 s after the word and often drops it.
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 400L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 0L)
+            // Endpointing: Google's DEFAULTS are used on purpose. An earlier
+            // tuning passed these extras as Long (Google reads Int → logged
+            // "expected Integer", silently dropped), and once fixed to Int the
+            // tightened values made quiet-room sessions die in <1 s
+            // (VAD blip → 600ms silence → "no match" → restart churn + beeps).
+            // Wake detection runs on partial results anyway, so a tight
+            // final window buys nothing.
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         }
@@ -621,6 +682,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private val recognitionListener = object : RecognitionListener {
         override fun onResults(results: Bundle?) {
             clientErrors = 0
+            busyErrors = 0
             deliver(results, true)
             // The recognizer stops itself after a result — re-arm the loop or
             // the wake word works exactly once per app start.
@@ -638,6 +700,7 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
             if ((error == 12 || error == 13) && recognizerOnDevice) {
                 Log.w(TAG, "[STT] no on-device model for $lang — using network recognizer")
                 onDeviceOnly = false
+                markOnDeviceBroken(lang)          // remember across boots
                 event("voice", JSONObject().put("type", "stt-fallback").put("lang", lang))
                 mainHandler.post {
                     val prevMode = listenMode
@@ -648,12 +711,37 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
                 }
                 return
             }
-            // 6 client, 7 no-recognition, 1 network, 2 audio busy → keep the loop alive
+            // Network path also rejects the language: retry once with the bare
+            // subtag ("el-GR" → "el"), then back off hard instead of hammering
+            // a recognizer that will never accept this language.
+            if ((error == 12 || error == 13) && !recognizerOnDevice) {
+                if (!langBareRetry) {
+                    langBareRetry = true
+                    Log.w(TAG, "[STT] network rejects $lang — retrying with ${sttLang()}")
+                    speechEvent("error", null, sttError(error), error)
+                    scheduleRestart(400, rebuild = true)
+                    return
+                }
+                langBareRetry = false
+                Log.w(TAG, "[STT] network has no model for $lang (or bare tag) — slow retry")
+                event("voice", JSONObject().put("type", "stt-fallback").put("lang", lang))
+                speechEvent("error", null, sttError(error), error)
+                if (listenMode == "loop" || listenMode == "conversation") scheduleRestart(15000, rebuild = true)
+                return
+            }
+            // 7 = RECOGNIZER_BUSY (the old "no-recognition" comment was wrong):
+            // hammering startListening() on a wedged session makes it worse.
+            // Rebuild the recognizer once, then back off exponentially.
+            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) busyErrors++
             speechEvent("error", null, sttError(error), error)
             if (listenMode == "loop" || listenMode == "conversation") {
-                val wait = if (error == 7 || error == 6) 300
-                    else (500 + clientErrors * 500).coerceAtMost(3000)
-                scheduleRestart(wait.toLong())
+                val wait = when {
+                    error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
+                        (500L * (1 shl busyErrors.coerceAtMost(4))).coerceAtMost(8000)
+                    error == 7 || error == 6 -> 400
+                    else -> (500 + clientErrors * 500).coerceAtMost(3000).toLong()
+                }
+                scheduleRestart(wait, rebuild = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)
             }
         }
         override fun onReadyForSpeech(params: Bundle?) {}
@@ -673,12 +761,27 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
+    // Google's network recognizer on this device delivers the utterance only
+    // through onPartialResults — the final bundle arrives with an EMPTY
+    // RESULTS_RECOGNITION (verified via logcat: list=null, bundle[]). Without
+    // this fallback every final was silently dropped and turns never started.
+    private var lastPartialText: String? = null
+
     private fun deliver(results: Bundle?, final: Boolean) {
         if (listenMode == "whisper") return      // whisper owns this turn
-        val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return
-        val text = list.firstOrNull()?.trim() ?: return
-        if (text.isEmpty()) return
-        if (final) Log.d(TAG, "[STT] final: $text")
+        var list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        var text = list?.firstOrNull()?.trim()
+        if (final && text.isNullOrEmpty()) {
+            text = lastPartialText
+            if (!text.isNullOrEmpty()) Log.d(TAG, "[STT] final from last partial: $text")
+        }
+        if (text.isNullOrEmpty()) return
+        if (final) {
+            lastPartialText = null
+            Log.d(TAG, "[STT] final: $text")
+        } else {
+            lastPartialText = text
+        }
         speechEvent(if (final) "final" else "partial", text, null, 0)
         if (!final && listenMode == "once") { /* keep listening */ }
     }
@@ -705,20 +808,28 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     }
 
     private var clientErrors = 0
+    private var busyErrors = 0
 
-    private fun scheduleRestart(delayMs: Long) {
+    private fun scheduleRestart(delayMs: Long, rebuild: Boolean = false) {
         val token = listenToken
         mainHandler.postDelayed({
             if (listenMode == "off" || token != listenToken) return@postDelayed
             // A recognizer that has been cancelled and restarted in quick
             // succession wedges itself (ERROR_CLIENT forever). Build a fresh
             // one instead of hammering startListening().
-            if (clientErrors >= 2) {
+            if (rebuild || clientErrors >= 2 || busyErrors >= 2) {
                 clientErrors = 0
+                busyErrors = 0
                 try { speech?.cancel() } catch (e: Exception) { }
                 try { speech?.destroy() } catch (e: Exception) { }
                 speech = null
                 ensureRecognizer()
+                // destroy() settles asynchronously — give it a beat before
+                // startListening(), or the fresh session starts busy again.
+                mainHandler.postDelayed({
+                    if (listenMode != "off" && token == listenToken) startListening()
+                }, 250)
+                return@postDelayed
             }
             startListening()
         }, delayMs)
@@ -1071,9 +1182,16 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     private fun createTts(engine: String?, attemptedDefault: Boolean = false) {
         val want = engine ?: if (!attemptedDefault) pickTtsEngine() else null
         ttsEngine = want
+        // Shutdown the old engine before replacing it: swapping languages can
+        // re-create TTS, and a leaked connection means two live engines (ghost
+        // audio, doubled speech).
+        try { tts?.shutdown() } catch (e: Exception) { /* ignore */ }
+        tts = null
+        ttsReady = false
         val listener = TextToSpeech.OnInitListener { status ->
             if (status == TextToSpeech.SUCCESS) {
                 ttsReady = true
+                ttsInitAttempts = 0
                 try { tts?.setOnUtteranceProgressListener(uttListener) } catch (e: Exception) { /* ignore */ }
                 Log.d(TAG, "[TTS] ready engine=${want ?: "default"}")
                 applyTtsLocale()          // may swap engines if the language is missing
@@ -1137,14 +1255,37 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         ttsQueue.add(requestId to text)
         if (tts == null) {
             createTts(null)
+            // Bounded retry: if OnInit never fires (wedged engine service),
+            // fail the queued utterances instead of hanging until the
+            // page's 180 s timeout.
+            ttsInitAttempts++
+            if (ttsInitAttempts <= 5) {
+                mainHandler.postDelayed({ drainTtsQueue() }, 1500)
+            } else {
+                Log.e(TAG, "[TTS] init never completed — failing queued speech")
+                val queued = ttsQueue.toList(); ttsQueue.clear()
+                queued.forEach { (req, _) -> resolve(req, false, err("tts unavailable")) }
+            }
         } else {
             // still initialising: retry shortly
-            mainHandler.postDelayed({
-                val queued = ttsQueue.toList(); ttsQueue.clear()
-                queued.forEach { (req, txt) ->
-                    if (ttsReady) doSpeak(req, txt) else ensureTts(req, txt)
-                }
-            }, 400)
+            mainHandler.postDelayed({ drainTtsQueue() }, 400)
+        }
+    }
+
+    private fun drainTtsQueue() {
+        if (ttsQueue.isEmpty()) return
+        if (ttsReady) {
+            val queued = ttsQueue.toList(); ttsQueue.clear()
+            queued.forEach { (req, txt) -> doSpeak(req, txt) }
+        } else if (tts != null) {
+            mainHandler.postDelayed({ drainTtsQueue() }, 400)
+        } else if (ttsInitAttempts <= 5) {
+            ttsInitAttempts++
+            createTts(null)
+            mainHandler.postDelayed({ drainTtsQueue() }, 1500)
+        } else {
+            val queued = ttsQueue.toList(); ttsQueue.clear()
+            queued.forEach { (req, _) -> resolve(req, false, err("tts unavailable")) }
         }
     }
 
@@ -1159,6 +1300,17 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         if (r != TextToSpeech.SUCCESS) {
             utteranceIds.remove(id)
             resolve(requestId, false, err("tts speak failed"))
+        } else if (!queue) {
+            // QUEUE_FLUSH cancels whatever was speaking; engines don't
+            // reliably deliver onDone for the cancelled utterances, which
+            // left their promises hanging until the 180 s JS timeout and
+            // froze appState at 'speaking'. Resolve them ourselves and emit
+            // a done so the page's turn logic can move on.
+            val orphaned = utteranceIds.keys.filter { it != id }
+            orphaned.forEach { oid ->
+                utteranceIds.remove(oid)?.let { resolve(it, true, "{}") }
+            }
+            if (orphaned.isNotEmpty()) event("tts", JSONObject().put("type", "done"))
         }
     }
 
@@ -1178,7 +1330,16 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
     }
 
     private fun stopSpeak() {
-        mainHandler.post { tts?.stop() }
+        mainHandler.post {
+            tts?.stop()
+            // A stopped engine never calls onDone for the cancelled text —
+            // release the waiters and tell the page the speech is over.
+            if (utteranceIds.isNotEmpty()) {
+                val ids = utteranceIds.keys.toList()
+                ids.forEach { id -> utteranceIds.remove(id)?.let { resolve(it, true, "{}") } }
+                event("tts", JSONObject().put("type", "done"))
+            }
+        }
     }
 
     /* ═══════════ schedule: reminders / alarms / timers ═══════════ */
@@ -1504,10 +1665,157 @@ class PalBridge(private val ctx: Context, private val emit: (String) -> Unit) {
         }
     }
 
+    /* ═══════════ Home Assistant (LAN, long-lived access token) ═══════════ */
+
+    private fun haPrefs() = ctx.getSharedPreferences("pal_ha", Context.MODE_PRIVATE)
+
+    /**
+     * Home Assistant bridge. Actions:
+     *   config  {url, token}          → save (empty token keeps the stored one)
+     *   states  {}                    → GET /api/states (id, name, domain, state)
+     *   call    {domain, service, target, value}
+     *                                 → POST /api/services/{domain}/{service}
+     * target is matched against friendly names (Greek/English, accent-insensitive);
+     * null target = every entity of that domain.
+     */
+    private fun ha(requestId: String, p: JSONObject) {
+        when (p.optString("action", "call")) {
+            "config" -> {
+                val e = haPrefs().edit()
+                if (p.has("url")) e.putString("url", p.optString("url").trim().trimEnd('/'))
+                if (p.has("token") && p.optString("token").isNotBlank()) e.putString("token", p.optString("token").trim())
+                e.apply()
+                resolve(requestId, true, haConfigJson())
+            }
+            "states" -> io.execute { haStates(requestId) }
+            "call" -> io.execute { haCall(requestId, p) }
+            else -> resolve(requestId, false, err("unknown ha action"))
+        }
+    }
+
+    private fun haConfigJson(): String = JSONObject()
+        .put("url", haPrefs().getString("url", "") ?: "")
+        .put("hasToken", !(haPrefs().getString("token", "") ?: "").isBlank())
+        .toString()
+
+    private fun haConn(url: String, method: String, body: String?): HttpURLConnection {
+        val token = haPrefs().getString("token", "") ?: ""
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.requestMethod = method
+        c.connectTimeout = 5000
+        c.readTimeout = 10_000
+        c.setRequestProperty("Authorization", "Bearer $token")
+        c.setRequestProperty("Content-Type", "application/json")
+        if (body != null) {
+            c.doOutput = true
+            OutputStreamWriter(c.outputStream, Charsets.UTF_8).use { it.write(body) }
+        }
+        return c
+    }
+
+    private fun haRead(c: HttpURLConnection): String =
+        BufferedReader(InputStreamReader(c.inputStream, Charsets.UTF_8)).use { it.readText() }
+
+    private fun haStates(requestId: String) {
+        val base = haPrefs().getString("url", "") ?: ""
+        if (base.isBlank()) { resolve(requestId, false, err("home assistant not configured")); return }
+        var conn: HttpURLConnection? = null
+        try {
+            conn = haConn("$base/api/states", "GET", null)
+            if (conn.responseCode !in 200..299) {
+                resolve(requestId, false, err("home assistant answered ${conn.responseCode}")); return
+            }
+            val arr = JSONArray(haRead(conn))
+            val out = JSONArray()
+            for (i in 0 until arr.length()) {
+                val st = arr.getJSONObject(i)
+                val id = st.optString("entity_id")
+                val attrs = st.optJSONObject("attributes") ?: JSONObject()
+                val name = attrs.optString("friendly_name", id)
+                out.put(JSONObject()
+                    .put("id", id)
+                    .put("name", name)
+                    .put("domain", id.substringBefore('.', ""))
+                    .put("state", st.optString("state")))
+            }
+            resolve(requestId, true, JSONObject().put("entities", out).toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "[HA] states failed: ${e.message}")
+            resolve(requestId, false, err(e.message ?: "home assistant unreachable"))
+        } finally { try { conn?.disconnect() } catch (e: Exception) { } }
+    }
+
+    private fun haCall(requestId: String, p: JSONObject) {
+        val base = haPrefs().getString("url", "") ?: ""
+        if (base.isBlank()) { resolve(requestId, false, err("home assistant not configured")); return }
+        val domain = p.optString("domain", "light")
+        val service = p.optString("service", "turn_on")
+        val target = p.optString("target", "").trim()
+        var conn: HttpURLConnection? = null
+        try {
+            // Resolve the spoken target ("kitchen", "κουζίνα") to entity ids.
+            val ids = JSONArray()
+            val single = p.optString("entity", "").trim()
+            if (single.isNotBlank()) {
+                // Panel toggles pass the exact entity — no name matching.
+                ids.put(single)
+            } else if (target.isNotBlank() || service == "set_temperature") {
+                conn = haConn("$base/api/states", "GET", null)
+                if (conn.responseCode !in 200..299) {
+                    resolve(requestId, false, err("home assistant answered ${conn.responseCode}")); return
+                }
+                val arr = JSONArray(haRead(conn))
+                conn.disconnect(); conn = null
+                val needle = haNormalize(target)
+                for (i in 0 until arr.length()) {
+                    val st = arr.getJSONObject(i)
+                    val id = st.optString("entity_id")
+                    if (!id.startsWith("$domain.")) continue
+                    if (target.isBlank()) { ids.put(id); continue }
+                    val attrs = st.optJSONObject("attributes") ?: JSONObject()
+                    val name = haNormalize(attrs.optString("friendly_name", id))
+                    if (name.contains(needle) || needle.contains(name)) ids.put(id)
+                }
+                if (ids.length() == 0) {
+                    resolve(requestId, false, err("no $domain matched \"$target\"")); return
+                }
+            }
+            val body = JSONObject()
+            if (ids.length() > 0) body.put("entity_id", ids)
+            if (service == "set_temperature") body.put("temperature", p.optInt("value", 21))
+            conn = haConn("$base/api/services/$domain/$service", "POST", body.toString())
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val msg = try { conn.errorStream?.readBytes()?.decodeToString() ?: "" } catch (e: Exception) { "" }
+                resolve(requestId, false, err("home assistant answered $code ${msg.take(120)}")); return
+            }
+            haRead(conn)   // drain: HA answers with the updated states
+            Log.d(TAG, "[HA] $domain.$service -> ${ids.length()} entity(ies)")
+            resolve(requestId, true, JSONObject()
+                .put("domain", domain).put("service", service)
+                .put("count", ids.length()).toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "[HA] call failed: ${e.message}")
+            resolve(requestId, false, err(e.message ?: "home assistant unreachable"))
+        } finally { try { conn?.disconnect() } catch (e: Exception) { } }
+    }
+
+    /** Lowercase + strip accents so "κουζίνα" matches "Kouzina"/"Κουζίνα". */
+    private fun haNormalize(s: String): String =
+        java.text.Normalizer.normalize(s.trim().lowercase(Locale.US), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+
     /** App-control automation entry point: {method, payload} with methods
      * listApps, launchApp, snapshot, tapLabel, scroll, typeText, pressBack,
      * runTask, cancelTask. */
     private fun automation(requestId: String, p: JSONObject) {
+        // Automation steps sleep hundreds of ms each; running them on the
+        // WebView's single @JavascriptInterface thread blocked EVERY bridge
+        // call (listen/speak/http) for seconds right after a wake.
+        io.execute { automationBlocking(requestId, p) }
+    }
+
+    private fun automationBlocking(requestId: String, p: JSONObject) {
         val method = p.optString("method", "")
         val result = try {
             when (method) {
@@ -1891,9 +2199,13 @@ class BootReceiver : BroadcastReceiver() {
             action != Intent.ACTION_MY_PACKAGE_REPLACED &&
             action != "android.intent.action.QUICKBOOT_POWERON") return
         try {
+            // Start the UI.
             val i = Intent(context, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(i)
+            // Keep the wake-word loop and the LAN panel alive across reboots.
+            com.pal9000.robot.BrainService.ensureRunning(context)
+            com.pal9000.robot.PanelService.ensureRunning(context)
             Log.d("PAL9000", "[Boot] Loona started ($action)")
         } catch (e: Exception) {
             Log.w("PAL9000", "[Boot] cannot start: ${e.message}")
@@ -1909,7 +2221,7 @@ class PalApp : android.app.Application() {
     // Loona is in the background (it just shows cached settings).
     var server: PalServer? = null
 
-    fun startServer(bridge: PalBridge): PalServer {
+    fun startServer(bridge: PalBridge): PalServer = synchronized(this) {
         val existing = server
         if (existing != null) {
             existing.bridge = bridge
@@ -1918,6 +2230,6 @@ class PalApp : android.app.Application() {
         val srv = PalServer(this, bridge)
         srv.start()
         server = srv
-        return srv
+        srv
     }
 }

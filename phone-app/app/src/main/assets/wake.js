@@ -45,7 +45,9 @@
     peakRatio: 1.15,     // each peak must exceed threshold * peakRatio
     minBumpMs: 40,       // per-burst duration bounds
     maxBumpMs: 600,
-    maxValleyMs: 500,    // dip+silence between bursts (word gaps are longer)
+    maxValleyMs: 220,    // dip+silence between bursts. Kept tight: an
+                         // ordinary two-word greeting ("hello there", ~250 ms
+                         // gap) is NOT a wake word — 500 let it through.
     minSpanMs: 150,      // first burst start -> second burst end
     maxSpanMs: 2000,     // allow longer utterances before rejecting
     endSilenceMs: 300,   // unvoiced this long ends the utterance

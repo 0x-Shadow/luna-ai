@@ -233,7 +233,30 @@
       return { type: 'torch', on: !off };
     }
 
-    let m = /(?:[έε]νταση|ενταση)\s*(?:στο|σε|στο\s+)?(\d{1,3})\s*%?/.exec(s);
+    let m;
+
+    // ── Home Assistant: lights (before openApp/play, else "άνοιξε τα φώτα"
+    //    and "βάλε το φως" were swallowed by those rules) ──
+    if (/(φώτα|φωτα|φως|φωσ|φωτισμ)/.test(s)) {
+      const off = /(σβ[ήη]σε|σβησε|κλε[ίι]σε|κλεισε|απενεργοποίησε|απενεργοποιησε)/.test(s);
+      const tail = s.split(/(?:φώτα|φωτα|φως|φωσ|φωτισμ)/).pop() || '';
+      // no \b here: Greek letters aren't \w, so a boundary never matches
+      const tm = /(?:στ(?:ην|η|ο|ις|α|ων)|σε)\s+(?:τ[οηα]\s+)?(.+)$/.exec(tail);
+      return { type: 'ha', domain: 'light', service: off ? 'turn_off' : 'turn_on',
+               target: tm ? tm[1].trim() : null };
+    }
+
+    // ── Home Assistant: climate / heating ──
+    if (/(κλιματισμ|κλιματιστ|θερμοκρασ|θερμανσ|θέρμανσ)/.test(s)) {
+      const num = /(\d{1,2})\s*(?:βαθμ|°|c\b)?/.exec(s);
+      const wantsTemp = num && /(βάλε|βαλε|στήσ|στισ|σε\s|προς|ρύθμ)/.test(s);
+      if (wantsTemp) return { type: 'ha', domain: 'climate', service: 'set_temperature',
+                              target: null, value: parseInt(num[1], 10) };
+      const off = /(σβ[ήη]σε|σβησε|κλε[ίι]σε|κλεισε|απενεργοποίησε|απενεργοποιησε)/.test(s);
+      return { type: 'ha', domain: 'climate', service: off ? 'turn_off' : 'turn_on', target: null };
+    }
+
+    m = /(?:[έε]νταση|ενταση)\s*(?:στο|σε|στο\s+)?(\d{1,3})\s*%?/.exec(s);
     if (m) return { type: 'volume', value: Math.min(100, parseInt(m[1], 10)) / 100 };
     if (/([έε]νταση|ενταση)/.test(s)) {
       if (/(π[άα]νω|πανω|δυνατ[άα]|δυνατα|αύξησε|αυξησε)/.test(s)) return { type: 'volume', op: 'up' };
@@ -327,6 +350,11 @@
     const sw = splitWake(t);
     const body = sw.wake && sw.rest ? sw.rest : t;
 
+    // Declared once here: the rules below all assign to `m`, and a `let` further
+    // down would put them in the temporal dead zone (ReferenceError killed every
+    // English utterance before it reached a single rule).
+    let m;
+
     // simple on/off commands for torch, brightness, volume
     m = /\b(turn|switch|set)\s+(on|off)\s+(the\s+)?(torch|flashlight|flash)\b/.exec(s);
     if (m) return { type: 'torch', on: m[2] === 'on' };
@@ -342,8 +370,30 @@
       return { type: 'torch', on: false };
     }
 
+    // ── Home Assistant: lights ──
+    // "turn on/off the (kitchen) lights", "lights off", "turn on the lamp"
+    m = /\b(?:turn|switch)\s+(on|off)\s+(?:the\s+)?(?:(.+?)\s+)?(?:lights?|lamps?|bulbs?)\b/.exec(s);
+    if (m) return { type: 'ha', domain: 'light', service: m[1] === 'on' ? 'turn_on' : 'turn_off',
+                    target: (m[2] || '').replace(/\b(?:the|in|at|of)\b/g, '').trim() || null };
+    m = /^(?:(.+?)\s+)?(?:lights?|lamps?|bulbs?)\s+(?:on|off)\b/.exec(s);
+    if (m && /\b(on|off)\b/.test(s)) {
+      const onOff = /\boff\b/.test(s) ? 'turn_off' : 'turn_on';
+      return { type: 'ha', domain: 'light', service: onOff,
+               target: (m[1] || '').replace(/\b(?:the|in|at|of)\b/g, '').trim() || null };
+    }
+
+    // ── Home Assistant: climate ──
+    // "set temperature to 22", "set the thermostat to 21"
+    m = /\b(?:set|change)?\s*(?:the\s+)?(?:temperature|thermostat)\s*(?:to)?\s*(\d{1,2})\s*(?:degrees?|°|c\b)?/.exec(s);
+    if (m) return { type: 'ha', domain: 'climate', service: 'set_temperature',
+                    target: null, value: parseInt(m[1], 10) };
+    if (/\b(?:turn|switch)\s+(?:on|off)?\s*(?:the\s+)?(?:heating|thermostat|ac|air conditioning|air conditioner)\b/.test(s)) {
+      const off = /\boff\b/.test(s);
+      return { type: 'ha', domain: 'climate', service: off ? 'turn_off' : 'turn_on', target: null };
+    }
+
     // brightness
-    let m = /\bbrightness\s+(?:to\s+)?(\d{1,3})\s*%?\b/.exec(s);
+    m = /\bbrightness\s+(?:to\s+)?(\d{1,3})\s*%?\b/.exec(s);
     if (m) return { type: 'brightness', value: Math.min(100, parseInt(m[1], 10)) / 100 };
     if (/\bbrightness\s+(up|higher|brighter)\b/.test(s)) return { type: 'brightness', op: 'up' };
     if (/\bbrightness\s+(down|lower|dimmer|dim)\b/.test(s)) return { type: 'brightness', op: 'down' };
@@ -504,6 +554,39 @@
 
   /* ── spoken confirmations ──────────────────────────────────────── */
 
+  // Home Assistant confirmations (entity target is echoed back if given).
+  const HA_DOMAIN = {
+    light:    { gr: 'φώτα',    en: 'lights' },
+    climate:  { gr: 'κλιματισμός', en: 'heating' },
+    switch:   { gr: 'συσκευή', en: 'device' },
+    cover:    { gr: 'πόρτα',   en: 'cover' },
+    fan:      { gr: 'αεριστήρας', en: 'fan' },
+    media_player: { gr: 'μουσική', en: 'media' }
+  };
+
+  function haConfirm(a) {
+    const d = HA_DOMAIN[a.domain] || { en: a.domain || 'device' };
+    const where = a.target ? ' in ' + a.target : '';
+    switch (a.service) {
+      case 'turn_on':    return 'Turning on the ' + d.en + where + '.';
+      case 'turn_off':   return 'Turning off the ' + d.en + where + '.';
+      case 'set_temperature': return 'Temperature set to ' + a.value + ' degrees.';
+      case 'toggle':     return 'Toggling the ' + d.en + where + '.';
+      default:           return 'Okay.';
+    }
+  }
+
+  function haConfirmGr(a) {
+    const d = HA_DOMAIN[a.domain] || { gr: a.domain || 'συσκευή' };
+    const where = a.target ? ' στο ' + a.target : '';
+    switch (a.service) {
+      case 'turn_on':    return a.domain === 'light' ? 'Άνοιξα τα φώτα' + where + '.' : 'Ενεργοποίησα τον ' + d.gr + where + '.';
+      case 'turn_off':   return a.domain === 'light' ? 'Έκλεισα τα φώτα' + where + '.' : 'Απενεργοποίησα τον ' + d.gr + where + '.';
+      case 'set_temperature': return 'Η θερμοκρασία στους ' + a.value + ' βαθμούς.';
+      default:           return 'Εντάξει.';
+    }
+  }
+
   // ── Greek spoken confirmations ──
   function durGr(ms) {
     const s = Math.round(ms / 1000);
@@ -537,6 +620,7 @@
       case 'alarm':    return 'Ξυπνητήρι ' + whenGr(action.atMs, now) + '.';
       case 'timer':    return 'Χρονόμετρο για ' + durGr(action.ms) + '.';
       case 'torch':    return action.on ? 'Ο φακός άνοιξε.' : 'Ο φακός έκλεισε.';
+      case 'ha':       return haConfirmGr(action);
       case 'brightness': return action.op === 'up' ? 'Φωτεινότητα πάνω.' :
         action.op === 'down' ? 'Φωτεινότητα κάτω.' :
         'Φωτεινότητα στο ' + Math.round(action.value * 100) + ' τοις εκατό.';
@@ -583,6 +667,7 @@
       case 'alarm':    return 'Alarm set ' + friendlyWhen(action.atMs, now) + '.';
       case 'timer':    return 'Timer started for ' + friendlyDuration(action.ms) + '.';
       case 'torch':    return action.on ? 'Flashlight on.' : 'Flashlight off.';
+      case 'ha':       return haConfirm(action);
       case 'brightness': return action.op === 'up' ? 'Brightness up.' :
         action.op === 'down' ? 'Brightness down.' :
         'Brightness set to ' + Math.round(action.value * 100) + ' percent.';
@@ -639,6 +724,7 @@
     '  reminder|alarm: {title, when}   when = "in 10 minutes", "at 7:30 pm", "tomorrow at 9"',
     '  timer: {minutes|seconds}',
     '  torch: {on:true|false}',
+    '  ha: {domain:"light"|"climate"|"switch", service:"turn_on"|"turn_off"|"set_temperature", target:"room or device name"|null, value:degrees}',
     '  volume: {level:0-100} or {op:"up"|"down"|"mute"}',
     '  brightness: {level:0-100} or {op:"up"|"down"}',
     '  openApp: {query}      search: {query}      youtube: {query}',
@@ -731,6 +817,13 @@
         return { type: 'timer', ms: ms, label: cap(String(a.title || 'Timer')) };
       }
       case 'torch': return { type: 'torch', on: a.on !== false };
+      case 'ha': {
+        const svc = String(a.service || (a.on === false ? 'turn_off' : 'turn_on'));
+        const out = { type: 'ha', domain: String(a.domain || 'light'), service: svc,
+                      target: a.target ? String(a.target) : null };
+        if (svc === 'set_temperature') out.value = Number(a.value);
+        return out;
+      }
       case 'volume':
         if (a.op) return { type: 'volume', op: String(a.op), stream: a.stream };
         return { type: 'volume', value: pct(a.level != null ? a.level : a.value) };

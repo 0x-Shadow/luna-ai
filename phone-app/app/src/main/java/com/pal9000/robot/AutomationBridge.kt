@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
+import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import kotlin.jvm.Volatile
 
@@ -218,10 +219,19 @@ class AutomationBridge(private val ctx: Context) {
 
     fun pressBack(): Map<String, Any?> {
         try {
-            ctx.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            })
-            return mapOf("ok" to true, "evidence" to "back/home sent")
+            // Real BACK via the accessibility service (enabled by the user). A
+            // HOME press is NOT back — it leaves the current app instead of
+            // navigating one screen back inside it.
+            val acc = com.pal9000.robot.LoonaAccessibilityService.instance
+            if (acc != null) {
+                acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                return mapOf("ok" to true, "evidence" to "back via accessibility service")
+            }
+            // Fallback: inject a back key down/up through the input manager.
+            ctx.getSystemService(Context.INPUT_METHOD_SERVICE)?.let { im ->
+                // no-op kept for future use
+            }
+            return mapOf("ok" to false, "error" to "accessibility service not enabled — enable PAL9000 in Settings › Accessibility")
         } catch (e: Exception) {
             return mapOf("ok" to false, "error" to "back failed: ${e.message}")
         }
