@@ -319,6 +319,17 @@
     </div>
   </header>
 
+  <!-- token entry (shown when no access token is stored) -->
+  <section id="token-section" class="card" style="display:none">
+    <h2><svg><use href="#i-shield"/></svg>Πρόσβαση — δώσε το κωδικό του panel</h2>
+    <p style="margin:0 0 10px;color:var(--dim);font-size:13px">
+      To panel prepei na prosthetei o kodikos prosvashs. O kodikos menei sto tilefono — den vgebnei ektos autou.
+    </p>
+    <input id="token-input" type="password" placeholder="κωδικός panel" style="padding:10px;width:260px;margin-right:8px">
+    <button class="btn" id="token-submit">Ξεκλειδώσετε</button>
+    <p id="token-msg" style="margin-top:8px;font-size:12.5px;color:var(--dim);"></p>
+  </section>
+
   <main>
     <!-- 1 · live screen + quick actions -->
     <section class="card hero">
@@ -870,14 +881,39 @@
 
   async function refresh() {
     try {
-      paint(await api('/api/state'));
+      const s = await api('/api/state');
+      paint(s);
+      $('token-section').style.display = 'none';
+      $('link-dot').className = 'dot ok';
+      $('link-text').textContent = 'online';
     } catch (e) {
       $('link-dot').className = 'dot';
       $('link-text').textContent = 'offline';
+      // If we have no token yet, show the entry section so the user can add one.
+      if (!panelToken) {
+        $('token-section').style.display = 'block';
+        $('token-msg').textContent = 'Dooravste sto panel: dwste ton kwdiko kai patiste "Kseidwseis".';
+      } else {
+        $('token-msg').textContent = 'Desmos apetuxe (' + (e.message || 'unknown') + ') — elegxete ton kwdiko.';
+      }
     }
   }
   refresh();
   setInterval(refresh, 4000);
+
+  // show/hide token entry based on whether we have a token
+  $('token-section').style.display = panelToken ? 'none' : 'block';
+
+  $('token-submit').addEventListener('click', async function () {
+    var tok = $('token-input').value.trim();
+    if (!tok) { $('token-msg').textContent = 'Dwse kwdiko.'; return; }
+    panelToken = tok;
+    try { localStorage.setItem('pal_panel_token', tok); } catch (e) {}
+    $('token-section').style.display = 'none';
+    $('token-msg').textContent = '';
+    await refresh();
+  });
+  $('token-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('token-submit').click(); });
 
   /* ── hermes ───────────────────────────────────── */
 

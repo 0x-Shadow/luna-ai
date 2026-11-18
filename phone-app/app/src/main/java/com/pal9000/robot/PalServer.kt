@@ -144,20 +144,26 @@ class PalServer(private val ctx: Context, var bridge: PalBridge) {
 
                 val clientIp = sock.inetAddress?.hostAddress ?: "?"
 
-                // ── access control ──
-                val token = panelToken()
-                if (token.isNotBlank()) {
-                    if (clientIp in blockedIps()) {
-                        val out = sock.getOutputStream()
-                        respond(out, 403, "text/html; charset=utf-8",
-                            "<h1>403</h1><p>This device is blocked.</p>")
-                        return
-                    }
-                    val provided = queryParam(query, "t") ?: headers["x-panel-token"]
-                    if (provided != token) {
-                        val out = sock.getOutputStream()
-                        respond(out, 401, "text/html; charset=utf-8", unauthorizedPage())
-                        return
+                // ── route matching ──
+                val isPublicPage = method == "GET" && (path == "/" || path == "/index.html")
+
+                // ── access control (skipped for the public panel page;
+                //    API endpoints still require ?t or x-panel-token) ──
+                if (!isPublicPage) {
+                    val token = panelToken()
+                    if (token.isNotBlank()) {
+                        if (clientIp in blockedIps()) {
+                            val out = sock.getOutputStream()
+                            respond(out, 403, "text/html; charset=utf-8",
+                                "<h1>403</h1><p>This device is blocked.</p>")
+                            return
+                        }
+                        val provided = queryParam(query, "t") ?: headers["x-panel-token"]
+                        if (provided != token) {
+                            val out = sock.getOutputStream()
+                            respond(out, 401, "text/html; charset=utf-8", unauthorizedPage())
+                            return
+                        }
                     }
                 }
                 // track connected clients
